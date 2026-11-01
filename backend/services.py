@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import json
 import re
 import threading
@@ -333,17 +334,13 @@ class CARESBackend:
                 previous_event["risk_level"] if previous_event else None
             )
             is_demo_source = source.startswith("DEMO_")
-            demo_sms_enabled = os.getenv(
-            "CARES_ENABLE_DEMO_SMS", "0"
-            ).strip().lower() in {"1", "true", "yes", "on"}
 
             # Notify only when entering a new HIGH-risk episode.
+            # Demo notifications are allowed, but guardian.sms forces MOCK delivery.
             should_notify = (
-    payload["risk_level"] == RiskLevel.HIGH.value
-    and previous_risk != RiskLevel.HIGH.value
-    and (not is_demo_source or demo_sms_enabled)
-)
-
+                payload["risk_level"] == RiskLevel.HIGH.value
+                and previous_risk != RiskLevel.HIGH.value
+            )
             cursor = connection.execute(
                 "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "
                 "percentage_deviation, risk_level, risk_score, confidence, trend, persistence, "

@@ -1,9 +1,12 @@
+
 """
 CARES guardian SMS service.
 
-The default provider is MOCK so automated tests and local development never
-send real messages accidentally. Set CARES_SMS_PROVIDER=textbee and provide
-TEXTBEE_API_KEY to enable real SMS through the registered Android gateway.
+Default provider: MOCK.
+Real SMS is attempted only when CARES_SMS_PROVIDER=textbee
+and the required TextBee credentials are configured.
+
+Demo notifications are explicitly labelled as simulated.
 """
 
 from __future__ import annotations
@@ -24,32 +27,46 @@ HTTP_TIMEOUT_SECONDS = 15
 
 
 def _load_local_env() -> None:
-    """Load project .env settings during normal runs, never during pytest.
+    """Load the project .env file during normal runs, never during pytest."""
 
-    Tests must rely only on their explicitly configured environment so a
-    developer's local TextBee key cannot leak into a test that intentionally
-    removes the key or accidentally trigger a real provider request.
-    """
     if os.getenv("PYTEST_CURRENT_TEST"):
         return
 
     env_path = Path(__file__).resolve().parent.parent / ".env"
+
     if not env_path.is_file():
         return
 
     try:
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
+
             if not line or line.startswith("#") or "=" not in line:
                 continue
+
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
+
             if key and key not in os.environ:
                 os.environ[key] = value
+
     except OSError:
-        # Environment variables can still be supplied by the host process.
         return
+
+
+def _normalize_phone(phone_number: str) -> str:
+    """Normalize a phone number and require international format."""
+
+    phone = re.sub(r"[\s().-]", "", str(phone_number or ""))
+
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+        raise ValueError(
+            "Guardian phone number must use international format, "
+            "e.g. +919876543210."
+        )
+
+    return phone
 
 
 def _build_message(
@@ -59,12 +76,17 @@ def _build_message(
     longitude: Optional[float],
     location_address: Optional[str],
     timestamp: Optional[float | str],
+    is_demo: bool = False,
 ) -> tuple[str, Optional[str]]:
+    """Build either a real-event alert or an explicitly labelled demo alert."""
+
     location_url = None
+
     if latitude is not None and longitude is not None:
         try:
             latitude = float(latitude)
             longitude = float(longitude)
+
             if (
                 not math.isfinite(latitude)
                 or not math.isfinite(longitude)
@@ -72,70 +94,101 @@ def _build_message(
                 or not -180 <= longitude <= 180
             ):
                 raise ValueError
-            location_url = f"https://www.google.com/maps?q={latitude},{longitude}"
+
+            location_url = (
+                f"https://www.google.com/maps?q={latitude},{longitude}"
+            )
+
         except (TypeError, ValueError):
             location_url = None
 
     if timestamp is None:
-        event_time = datetime.now().astimezone().strftime("%d-%m-%Y %I:%M:%S %p %Z")
+        event_time = datetime.now().astimezone().strftime(
+            "%d-%m-%Y %I:%M:%S %p %Z"
+        )
     else:
         try:
-            event_time = datetime.fromtimestamp(float(timestamp)).astimezone().strftime(
-                "%d-%m-%Y %I:%M:%S %p %Z"
-            )
+            event_time = datetime.fromtimestamp(
+                float(timestamp)
+            ).astimezone().strftime("%d-%m-%Y %I:%M:%S %p %Z")
+
         except (TypeError, ValueError, OverflowError, OSError):
             event_time = str(timestamp)
 
-    lines = [
-        "CARES EMERGENCY ALERT",
-        "",
-        "A HIGH-risk event has been detected.",
-        f"User: {user_name}",
-        "Risk Level: HIGH",
-        f"Heart Rate: {heart_rate:.1f} BPM",
-        f"Time: {event_time}",
-    ]
+    if is_demo:
+        lines = [
+            "CARES PRESENTATION DEMO",
+            "",
+            "SIMULATED HIGH-RISK CONDITION DETECTED",
+            f"User: {user_name}",
+            "Risk Level: HIGH (SIMULATED)",
+            f"Heart Rate: {heart_rate:.1f} BPM (SYNTHETIC DATA)",
+            f"Time: {event_time}",
+            "",
+            "NOT A REAL MEDICAL EMERGENCY.",
+            "No emergency response is required.",
+        ]
+    else:
+        lines = [
+            "CARES EMERGENCY ALERT",
+            "",
+            "A HIGH-risk event has been detected.",
+            f"User: {user_name}",
+            "Risk Level: HIGH",
+            f"Heart Rate: {heart_rate:.1f} BPM",
+            f"Time: {event_time}",
+        ]
+
     if location_address:
         lines.append(f"Location: {location_address}")
+
     if location_url:
         lines.append(f"Google Maps: {location_url}")
     else:
         lines.append("GPS location: Unavailable")
 
-    lines.extend([
-        "",
-        "Please contact the user and provide immediate assistance.",
-        "- CARES System",
-    ])
+    if not is_demo:
+        lines.extend([
+            "",
+            "Please contact the user and provide immediate assistance.",
+        ])
+
+    lines.append("- CARES System")
+
     return "\n".join(lines), location_url
 
 
-def _normalize_phone(phone_number: str) -> str:
-    """Return an E.164 phone number; reject ambiguous local-format numbers."""
-    phone = re.sub(r"[\s().-]", "", str(phone_number or ""))
-    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-        raise ValueError(
-            "Guardian phone number must use international format, e.g. +919876543210."
-        )
-    return phone
+def _send_textbee(
+    phone_number: str,
+    message: str,
+) -> dict:
+    """Submit an SMS to TextBee.
 
+    PENDING means accepted by the provider, not delivered to the handset.
+    """
 
-def _send_textbee(phone_number: str, message: str) -> dict:
     _load_local_env()
+
     api_key = os.getenv("TEXTBEE_API_KEY", "").strip()
+
     if not api_key:
         return {
             "success": False,
             "status": "FAILED",
             "provider": "TEXTBEE",
-            "reason": "TEXTBEE_API_KEY is not configured in the project .env or environment.",
+            "reason": (
+                "TEXTBEE_API_KEY is not configured in the project "
+                ".env or environment."
+            ),
         }
 
     body = {
         "recipients": [phone_number],
         "message": message,
     }
+
     device_id = os.getenv("TEXTBEE_DEVICE_ID", "").strip()
+
     if device_id:
         body["deviceId"] = device_id
 
@@ -155,11 +208,13 @@ def _send_textbee(phone_number: str, message: str) -> dict:
         with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             response_body = response.read().decode("utf-8")
             status_code = response.status
+
     except HTTPError as exc:
         try:
             error_body = exc.read().decode("utf-8")
         except Exception:
             error_body = ""
+
         return {
             "success": False,
             "status": "FAILED",
@@ -167,6 +222,7 @@ def _send_textbee(phone_number: str, message: str) -> dict:
             "http_status": exc.code,
             "reason": error_body[:500] or str(exc),
         }
+
     except (URLError, TimeoutError, OSError) as exc:
         return {
             "success": False,
@@ -187,21 +243,31 @@ def _send_textbee(phone_number: str, message: str) -> dict:
         }
 
     data = parsed.get("data", parsed) if isinstance(parsed, dict) else {}
+
+    try:
+        success_count = int(data.get("successCount") or 0)
+    except (TypeError, ValueError):
+        success_count = 0
+
     accepted = status_code == 200 and (
         data.get("success") is True
         or bool(data.get("smsBatchId"))
-        or int(data.get("successCount") or 0) > 0
+        or success_count > 0
     )
+
     if not accepted:
         return {
             "success": False,
             "status": "FAILED",
             "provider": "TEXTBEE",
             "http_status": status_code,
-            "reason": str(data.get("message") or parsed.get("message") or "TextBee did not accept the SMS."),
+            "reason": str(
+                data.get("message")
+                or parsed.get("message")
+                or "TextBee did not accept the SMS."
+            ),
         }
 
-    # A 200 response confirms API acceptance/queueing, not handset delivery.
     return {
         "success": True,
         "status": "PENDING",
@@ -223,8 +289,10 @@ def send_guardian_sms(
     longitude: Optional[float] = None,
     location_address: Optional[str] = None,
     timestamp: Optional[float | str] = None,
+    is_demo: bool = False,
 ) -> dict:
-    """Send a personalized alert using MOCK or TextBee, based on configuration."""
+    """Send a guardian notification using MOCK or TextBee."""
+
     try:
         recipient = _normalize_phone(phone_number)
     except ValueError as exc:
@@ -235,10 +303,13 @@ def send_guardian_sms(
         }
 
     user_name = str(user_name or "").strip() or "CARES User"
+
     try:
         heart_rate = float(heart_rate)
+
         if not math.isfinite(heart_rate):
             raise ValueError
+
     except (TypeError, ValueError):
         return {
             "success": False,
@@ -253,15 +324,25 @@ def send_guardian_sms(
         longitude=longitude,
         location_address=location_address,
         timestamp=timestamp,
+        is_demo=is_demo,
     )
 
     _load_local_env()
-    provider = os.getenv("CARES_SMS_PROVIDER", "mock").strip().lower()
 
-    # Prevent an accidental real SMS during the test suite, even if a developer
-    # has configured TextBee in their local .env. Provider unit tests may opt in
-    # while replacing urlopen with a fake HTTP response.
-    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("CARES_ALLOW_SMS_IN_TESTS") != "true":
+    provider = os.getenv(
+        "CARES_SMS_PROVIDER", "mock"
+    ).strip().lower()
+
+    # Demo notifications must NEVER send real SMS.
+    if is_demo:
+        provider = "mock"
+
+    # Never allow accidental real SMS during pytest.
+    # Non-demo tests can explicitly opt in when the network is mocked.
+    elif (
+        os.getenv("PYTEST_CURRENT_TEST")
+        and os.getenv("CARES_ALLOW_SMS_IN_TESTS") != "true"
+    ):
         provider = "mock"
 
     if provider == "mock":
@@ -270,6 +351,7 @@ def send_guardian_sms(
             + "\n\nThis is a simulated CARES guardian notification. "
             "No real SMS was sent."
         )
+
         print("\n" + "=" * 55)
         print("CARES MOCK SMS SERVICE")
         print("=" * 55)
@@ -279,6 +361,7 @@ def send_guardian_sms(
         print("SIMULATION STATUS: MOCK_SENT")
         print("REAL SMS DELIVERY: NOT ATTEMPTED")
         print("=" * 55 + "\n")
+
         return {
             "success": True,
             "status": "MOCK_SENT",
@@ -291,17 +374,22 @@ def send_guardian_sms(
 
     if provider == "textbee":
         result = _send_textbee(recipient, message)
+
         result.update({
             "recipient": recipient,
             "message": message,
             "location_url": location_url,
             "real_sms_sent": False,
         })
+
         return result
 
     return {
         "success": False,
         "status": "FAILED",
         "provider": provider.upper(),
-        "reason": "Unsupported CARES_SMS_PROVIDER. Use 'mock' or 'textbee'.",
+        "reason": (
+            "Unsupported CARES_SMS_PROVIDER. "
+            "Use 'mock' or 'textbee'."
+        ),
     }
