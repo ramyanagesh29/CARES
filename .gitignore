@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/wesad/
+data/cares.sqlite3*
+
+# Local secrets (TextBee API key and provider settings)
+.env
+# Local development files
+.env.*
+!.env.example
+.vscode/
+*.backup
