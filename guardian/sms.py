@@ -275,9 +275,125 @@ def _send_textbee(
         "provider_status": "ACCEPTED",
         "http_status": status_code,
         "sms_batch_id": data.get("smsBatchId"),
+        "device_id": device_id,
         "recipient_count": data.get("recipientCount", 1),
         "warning": data.get("warning"),
         "delivery_confirmed": False,
+    }
+
+
+
+def get_textbee_batch_status(
+    sms_batch_id: str,
+    device_id: Optional[str] = None,
+) -> dict:
+    """Read TextBee batch delivery status without sending an SMS."""
+    from urllib.parse import quote
+
+    _load_local_env()
+
+    api_key = os.getenv("TEXTBEE_API_KEY", "").strip()
+    device_id = os.getenv("TEXTBEE_DEVICE_ID", "").strip()
+    batch_id = str(sms_batch_id or "").strip()
+
+    if not api_key or not device_id or not batch_id:
+        return {
+            "success": False,
+            "provider": "TEXTBEE",
+            "reason": "TextBee credentials, device ID, or batch ID missing.",
+        }
+
+    url = (
+        "https://api.textbee.dev/api/v1/gateway/devices/"
+        f"{quote(device_id, safe='')}/sms-batch/{quote(batch_id, safe='')}"
+    )
+
+    request = Request(
+        url,
+        headers={
+            "x-api-key": api_key,
+            "Accept": "application/json",
+            "User-Agent": "CARES/1.0",
+        },
+        method="GET",
+    )
+
+    try:
+        with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            response_body = response.read().decode("utf-8")
+            status_code = response.status
+
+    except HTTPError as exc:
+        return {
+            "success": False,
+            "provider": "TEXTBEE",
+            "http_status": exc.code,
+            "reason": "TextBee status lookup failed.",
+        }
+
+    except (URLError, TimeoutError, OSError) as exc:
+        return {
+            "success": False,
+            "provider": "TEXTBEE",
+            "reason": f"TextBee status lookup connection failed: {exc}",
+        }
+
+    try:
+        parsed = json.loads(response_body) if response_body else {}
+    except json.JSONDecodeError:
+        return {
+            "success": False,
+            "provider": "TEXTBEE",
+            "http_status": status_code,
+            "reason": "TextBee returned invalid JSON.",
+        }
+
+    if status_code != 200 or not isinstance(parsed, dict):
+        return {
+            "success": False,
+            "provider": "TEXTBEE",
+            "http_status": status_code,
+            "reason": "TextBee status lookup was unsuccessful.",
+        }
+
+    data = parsed.get("data", parsed)
+    if not isinstance(data, dict):
+        return {
+            "success": False,
+            "provider": "TEXTBEE",
+            "reason": "Unexpected TextBee response format.",
+        }
+
+    batch = data.get("batch") or {}
+    messages = data.get("messages") or []
+
+    return {
+        "success": True,
+        "provider": "TEXTBEE",
+        "batch_status": batch.get("status"),
+        "messages": [
+            {
+                "status": str(message.get("status") or "unknown").lower(),
+                "error_code": message.get("errorCode"),
+                "error_message": message.get("errorMessage"),
+                "delivered_at": message.get("deliveredAt"),
+            }
+            for message in messages
+            if isinstance(message, dict)
+        ],
+        "counts": {
+            key: batch.get(key)
+            for key in (
+                "recipientCount",
+                "successCount",
+                "failureCount",
+                "pendingCount",
+                "dispatchedCount",
+                "sentCount",
+                "deliveredCount",
+                "unknownCount",
+            )
+        },
     }
 
 

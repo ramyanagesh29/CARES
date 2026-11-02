@@ -168,3 +168,82 @@ def test_action_status_is_explicitly_updated(tmp_path):
     updated = backend.update_action_status(user["id"], action["id"], "UNAVAILABLE", {"reason": "no integration configured"})
     assert updated["status"] == "UNAVAILABLE"
     assert updated["metadata"]["reason"] == "no integration configured"
+
+
+def test_delivery_status_api_requires_authentication(tmp_path, monkeypatch):
+    import guardian.sms
+
+    backend = make_backend(tmp_path)
+    api = CARESAPI(backend)
+
+    registered = api.handle("POST", "/api/auth/register", {
+        "name": "Delivery Test",
+        "email": "delivery-api@example.com",
+        "password": "correct horse",
+    })
+    assert registered.status == 201
+
+    login = api.handle("POST", "/api/auth/login", {
+        "email": "delivery-api@example.com",
+        "password": "correct horse",
+    })
+    assert login.status == 200
+
+    token = login.headers["Set-Cookie"].split("=", 1)[1].split(";", 1)[0]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    guardian_response = api.handle("POST", "/api/guardian", {
+        "name": "Test Guardian",
+        "phone_number": "+91 9876543210",
+        "relationship": "parent",
+    }, headers)
+    assert guardian_response.status == 201
+
+    monkeypatch.setattr(
+        guardian.sms,
+        "send_guardian_sms",
+        lambda **kwargs: {
+            "success": True,
+            "status": "PENDING",
+            "provider": "TEXTBEE",
+            "provider_status": "ACCEPTED",
+            "sms_batch_id": "api-delivery-test-batch",
+            "device_id": "api-test-device",
+            "delivery_confirmed": False,
+        },
+    )
+
+    monkeypatch.setattr(
+        guardian.sms,
+        "get_textbee_batch_status",
+        lambda batch_id, device_id=None: {
+            "success": True,
+            "batch_status": "completed",
+            "messages": [{"status": "delivered"}],
+            "counts": {"delivered": 1},
+        },
+    )
+
+    user_id = registered.body["user"]["id"]
+    backend.persist_engine_output(user_id, high_output())
+
+    action = next(
+        item for item in backend.list_actions(user_id)
+        if item["action_type"] == "GUARDIAN_NOTIFICATION"
+    )
+
+    response = api.handle(
+        "GET",
+        f"/api/actions/{action['id']}/delivery-status",
+        headers=headers,
+    )
+
+    assert response.status == 200
+    assert response.body["action"]["status"] == "DELIVERED"
+    assert response.body["action"]["metadata"]["delivery_confirmed"] is True
+
+    unauthorized = api.handle(
+        "GET",
+        f"/api/actions/{action['id']}/delivery-status",
+    )
+    assert unauthorized.status != 200

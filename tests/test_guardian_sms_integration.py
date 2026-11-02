@@ -377,3 +377,95 @@ def test_high_risk_backend_queues_textbee_alert_automatically(
     assert notification["metadata"]["provider_accepted"] is True
     assert notification["metadata"]["delivery_confirmed"] is False
     assert notification["metadata"]["recipients"][0]["sms_batch_id"] == "automatic-high-batch"
+
+
+def _create_textbee_action_for_delivery_test(tmp_path, monkeypatch):
+    backend = make_backend(tmp_path)
+    user = backend.register("Test User", "delivery@example.com", "password-one")
+    backend.add_guardian(user["id"], "Guardian", "+91 9876543210", "parent")
+
+    def fake_sms(**kwargs):
+        return {
+            "success": True,
+            "status": "PENDING",
+            "provider": "TEXTBEE",
+            "provider_status": "ACCEPTED",
+            "sms_batch_id": "delivery-test-batch",
+            "device_id": "delivery-test-device",
+            "delivery_confirmed": False,
+        }
+
+    monkeypatch.setattr(guardian.sms, "send_guardian_sms", fake_sms)
+
+    backend.persist_engine_output(
+        user["id"],
+        make_output(
+            RiskLevel.HIGH,
+            ["GUARDIAN_NOTIFICATION"],
+            1793424000.0,
+        ),
+    )
+
+    action = next(
+        item for item in backend.list_actions(user["id"])
+        if item["action_type"] == "GUARDIAN_NOTIFICATION"
+    )
+
+    return backend, user, action
+
+
+def test_delivery_receipt_refresh_marks_delivered(tmp_path, monkeypatch):
+    backend, user, action = _create_textbee_action_for_delivery_test(
+        tmp_path, monkeypatch
+    )
+
+    def fake_status(batch_id, device_id=None):
+        assert batch_id == "delivery-test-batch"
+        assert device_id == "delivery-test-device"
+        return {
+            "success": True,
+            "batch_status": "completed",
+            "messages": [{"status": "delivered"}],
+            "counts": {"delivered": 1},
+        }
+
+    monkeypatch.setattr(guardian.sms, "get_textbee_batch_status", fake_status)
+
+    refreshed = backend.refresh_action_delivery_status(
+        user["id"], action["id"]
+    )
+
+    assert refreshed["status"] == "DELIVERED"
+    assert refreshed["metadata"]["delivery_confirmed"] is True
+    recipient = refreshed["metadata"]["recipients"][0]
+    assert recipient["delivery_status"] == "DELIVERED"
+    assert recipient["delivery_confirmed"] is True
+
+
+def test_delivery_receipt_sent_is_not_marked_delivered(
+    tmp_path, monkeypatch,
+):
+    backend, user, action = _create_textbee_action_for_delivery_test(
+        tmp_path, monkeypatch
+    )
+
+    monkeypatch.setattr(
+        guardian.sms,
+        "get_textbee_batch_status",
+        lambda batch_id, device_id=None: {
+            "success": True,
+            "batch_status": "completed",
+            "messages": [{"status": "sent"}],
+            "counts": {"sent": 1},
+        },
+    )
+
+    refreshed = backend.refresh_action_delivery_status(
+        user["id"], action["id"]
+    )
+
+    assert refreshed["status"] == "SENT"
+    assert refreshed["metadata"]["delivery_confirmed"] is False
+    recipient = refreshed["metadata"]["recipients"][0]
+    assert recipient["delivery_status"] == "SENT"
+    assert recipient["delivery_confirmed"] is False

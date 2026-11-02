@@ -880,6 +880,31 @@ class CARESAPI:
 
             )
 
+        # TextBee delivery receipt refresh (read-only provider lookup).
+        delivery_prefix = "/api/actions/"
+        delivery_suffix = "/delivery-status"
+
+        if (
+            method == "GET"
+            and path.startswith(delivery_prefix)
+            and path.endswith(delivery_suffix)
+        ):
+            raw_action_id = path[
+                len(delivery_prefix):-len(delivery_suffix)
+            ]
+
+            if raw_action_id.isdigit():
+                return (
+                    200,
+                    {
+                        "action": self.backend.refresh_action_delivery_status(
+                            user_id,
+                            int(raw_action_id),
+                        )
+                    },
+                    {},
+                )
+
         action_id = self._id_after(path, "/api/actions/")
 
         if action_id is not None and method == "GET":

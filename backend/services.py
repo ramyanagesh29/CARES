@@ -489,6 +489,7 @@ class CARESBackend:
                     "provider": result.get("provider", "MOCK"),
                     "provider_status": result.get("provider_status"),
                     "sms_batch_id": result.get("sms_batch_id"),
+                    "device_id": result.get("device_id"),
                     "reason": result.get("reason"),
                     "warning": result.get("warning"),
                 })
@@ -534,6 +535,135 @@ class CARESBackend:
                 "delivery_confirmed": False,
                 "recipients": results,
             },
+        )
+
+
+    def refresh_action_delivery_status(
+        self,
+        user_id: int,
+        action_id: int,
+    ) -> dict[str, Any]:
+        """Refresh TextBee delivery receipts for an existing action."""
+
+        from datetime import datetime, timezone
+        from guardian.sms import get_textbee_batch_status
+
+        action = self.get_action(user_id, action_id)
+        metadata = dict(action.get("metadata") or {})
+        recipients = metadata.get("recipients") or []
+
+        if not isinstance(recipients, list) or not recipients:
+            raise ValidationError("This action has no recipient batch records.")
+
+        refreshed = []
+        for recipient in recipients:
+            item = dict(recipient)
+
+            if str(item.get("provider") or "").upper() != "TEXTBEE":
+                refreshed.append(item)
+                continue
+
+            batch_id = item.get("sms_batch_id")
+            if not batch_id:
+                item["delivery_lookup_error"] = "SMS batch ID is unavailable."
+                item["delivery_confirmed"] = False
+                refreshed.append(item)
+                continue
+
+            try:
+                result = get_textbee_batch_status(
+                    str(batch_id),
+                    device_id=item.get("device_id"),
+                )
+            except Exception as exc:
+                result = {
+                    "success": False,
+                    "reason": f"Status lookup error: {str(exc)[:250]}",
+                }
+
+            if not result.get("success"):
+                item["delivery_lookup_error"] = result.get(
+                    "reason", "Status lookup failed."
+                )
+                item["delivery_confirmed"] = False
+                refreshed.append(item)
+                continue
+
+            messages = result.get("messages") or []
+            message_statuses = [
+                str(message.get("status") or "unknown").lower()
+                for message in messages
+            ]
+            batch_status = str(
+                result.get("batch_status") or "unknown"
+            ).lower()
+
+            if message_statuses and all(
+                status == "delivered" for status in message_statuses
+            ):
+                recipient_status = "DELIVERED"
+                confirmed = True
+            elif message_statuses and all(
+                status == "failed" for status in message_statuses
+            ):
+                recipient_status = "FAILED"
+                confirmed = False
+            elif message_statuses and all(
+                status in ("sent", "delivered")
+                for status in message_statuses
+            ):
+                recipient_status = "SENT"
+                confirmed = False
+            elif batch_status == "failed":
+                recipient_status = "FAILED"
+                confirmed = False
+            else:
+                recipient_status = "PENDING"
+                confirmed = False
+
+            item["batch_status"] = batch_status
+            item["message_statuses"] = message_statuses
+            item["delivery_status"] = recipient_status
+            item["delivery_confirmed"] = confirmed
+            item["delivery_counts"] = result.get("counts") or {}
+            item.pop("delivery_lookup_error", None)
+            refreshed.append(item)
+
+        textbee_recipients = [
+            item for item in refreshed
+            if str(item.get("provider") or "").upper() == "TEXTBEE"
+        ]
+
+        statuses = [item.get("delivery_status", "PENDING")
+                    for item in textbee_recipients]
+
+        if statuses and all(status == "DELIVERED" for status in statuses):
+            overall_status = "DELIVERED"
+            overall_confirmed = True
+        elif statuses and all(status == "FAILED" for status in statuses):
+            overall_status = "FAILED"
+            overall_confirmed = False
+        elif statuses and all(
+            status in ("DELIVERED", "SENT", "FAILED")
+            for status in statuses
+        ):
+            overall_status = "SENT"
+            overall_confirmed = False
+        else:
+            overall_status = "PENDING"
+            overall_confirmed = False
+
+        metadata["recipients"] = refreshed
+        metadata["delivery_confirmed"] = overall_confirmed
+        metadata["delivery_status_checked_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        return self.update_action_status(
+            user_id,
+            action_id,
+            overall_status,
+            metadata,
         )
 
     def get_current(self, user_id: int) -> dict[str, Any]:
@@ -664,8 +794,15 @@ class CARESBackend:
         status = str(status or "").upper()
         if status not in ACTION_STATUSES:
             raise ValidationError("Invalid guardian action status.")
-        self.get_action(user_id, action_id)
-        self.database.execute("UPDATE guardian_action_events SET status = ?, metadata = ? WHERE id = ? AND user_id = ?", (status, _json(metadata or {}), action_id, user_id))
+        existing_action = self.get_action(user_id, action_id)
+        existing_metadata = existing_action.get("metadata") or {}
+        updated_metadata = {**existing_metadata, **(metadata or {})}
+
+        self.database.execute(
+            "UPDATE guardian_action_events SET status = ?, metadata = ? "
+            "WHERE id = ? AND user_id = ?",
+            (status, _json(updated_metadata), action_id, user_id),
+        )
         event = self.get_action(user_id, action_id)
         self.events.publish(user_id, {"type": "guardian_action", "data": event})
         return event
