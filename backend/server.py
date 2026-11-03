@@ -36,6 +36,17 @@ class CARESRequestHandler(BaseHTTPRequestHandler):
             return
         self._handle_json()
 
+    def do_HEAD(self) -> None:
+        request_path = urlsplit(self.path).path
+
+        if not request_path.startswith("/api/"):
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        self._handle_json()
+
     def do_POST(self) -> None:
         self._handle_json()
 
@@ -149,7 +160,11 @@ class CARESThreadingServer(ThreadingHTTPServer):
         super().__init__(address, CARESRequestHandler)
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8000, db_path: str = "data/cares.sqlite3") -> CARESThreadingServer:
+def create_server(
+    host: str = "0.0.0.0",
+    port: int = 8000,
+    db_path: str = "data/cares.sqlite3",
+) -> CARESThreadingServer:
     backend = CARESBackend(db_path=db_path)
     return CARESThreadingServer((host, port), backend)
 
