@@ -153,20 +153,44 @@ def create_server(host: str = "127.0.0.1", port: int = 8000, db_path: str = "dat
     backend = CARESBackend(db_path=db_path)
     return CARESThreadingServer((host, port), backend)
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the CARES backend server.")
-    parser.add_argument("--host", default=os.getenv("CARES_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("CARES_PORT", "8000")))
-    parser.add_argument("--db", default=os.getenv("CARES_DB_PATH", "data/cares.sqlite3"))
-    args = parser.parse_args()
-    # Load the project .env (if present) before anything reads configuration,
-    # so CARES_DEVICE_TOKEN / CARES_HARDWARE_USER_ID / SMS settings are all
-    # available from the first request. Existing environment variables win.
+    # Load project .env before reading configuration.
     from guardian.sms import _load_local_env
     _load_local_env()
+
+    parser = argparse.ArgumentParser(
+        description="Run the CARES backend server."
+    )
+
+    parser.add_argument(
+        "--host",
+        default=os.getenv("CARES_HOST", "0.0.0.0")
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(
+            os.getenv("PORT", os.getenv("CARES_PORT", "8000"))
+        )
+    )
+
+    parser.add_argument(
+        "--db",
+        default=os.getenv(
+            "CARES_DB_PATH",
+            "data/cares.sqlite3"
+        )
+    )
+
+    args = parser.parse_args()
+
     server = create_server(args.host, args.port, args.db)
-    print(f"CARES backend listening on http://{args.host}:{args.port}")
+
+    print(
+        f"CARES backend listening on http://{args.host}:{args.port}"
+    )
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
