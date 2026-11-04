@@ -18,7 +18,11 @@
     page: "dashboard",
     eventSource: null,
     realtimeConnected: false,
+    telemetry: null,
+    telemetryLocalAt: null,
   };
+  // A telemetry reading older than this is shown as stale (device may be offline).
+  const TELEMETRY_STALE_SECONDS = 30;
   const DEMO_SOURCES = ["DEMO_WESAD", "DEMO_SYNTHETIC"];
   const SESSION_ID_FIELD = "session_id";
 
@@ -116,6 +120,8 @@
   function showAuth(tab = "login") {
     state.eventSource?.close();
     state.eventSource = null;
+    setTelemetry(null);
+    renderTelemetry();
     $("#auth-view").classList.remove("is-hidden");
     $("#app-view").classList.add("is-hidden");
     $$("[data-auth-tab]").forEach((button) => {
@@ -177,6 +183,7 @@ async function loadNotificationStatus() {
         request("/api/demo/status"),
       ]);
       state.current = results[0];
+      setTelemetry(results[0].hardware_telemetry);
       state.demo = results[9].demo || results[0].demo || { active: false, session: null };
       state.history = results[1].events || [];
       state.baseline = results[2].baseline || null;
@@ -225,8 +232,48 @@ async function loadNotificationStatus() {
     source.onmessage = handleStreamMessage;
   }
 
+  // ---- ESP32 raw BPM telemetry (separate from risk-engine output) ----
+  function setTelemetry(reading) {
+    state.telemetry = reading || null;
+    state.telemetryLocalAt = reading ? Date.now() - (Number(reading.age_seconds) || 0) * 1000 : null;
+  }
+
+  function ageText(seconds) {
+    if (seconds < 60) return `${Math.max(0, Math.round(seconds))} s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+    return `${Math.floor(seconds / 3600)} h ago`;
+  }
+
+  function renderTelemetry() {
+    const value = $("#esp32-bpm");
+    const caption = $("#esp32-caption");
+    const card = $("#esp32-card");
+    if (!value || !caption || !card) return;
+    const reading = state.telemetry;
+    if (!reading || !Number.isFinite(Number(reading.heart_rate))) {
+      value.textContent = "—";
+      caption.textContent = "No ESP32 reading received yet";
+      card.classList.remove("is-stale");
+      return;
+    }
+    const age = Math.max(0, (Date.now() - state.telemetryLocalAt) / 1000);
+    const stale = age > TELEMETRY_STALE_SECONDS;
+    value.textContent = number(reading.heart_rate, 1);
+    const gps = reading.latitude != null && reading.longitude != null
+      ? ` · GPS ${Number(reading.latitude).toFixed(4)}, ${Number(reading.longitude).toFixed(4)}`
+      : "";
+    caption.textContent = `${reading.device_id} · ${ageText(age)}${stale ? " · no recent reading, device may be offline" : ""}${gps}`;
+    card.classList.toggle("is-stale", stale);
+  }
+
   function handleRealtime(event) {
     if (!event || !event.type) return;
+    if (event.type === "hardware_telemetry" && event.data) {
+      // Display-only: update just the telemetry card, never the engine views.
+      setTelemetry(event.data);
+      renderTelemetry();
+      return;
+    }
     if (event.type === "engine_output" && event.data) {
       state.current = { ...(state.current || {}), engine_event: event.data };
       state.history = [event.data, ...state.history.filter((item) => item.id !== event.data.id)].slice(0, 100);
@@ -256,6 +303,8 @@ async function loadNotificationStatus() {
         request("/api/dashboard/current"), request("/api/incidents?limit=100"), request("/api/actions?limit=100"), request("/api/location/latest"),
       ]);
       state.current = current;
+      setTelemetry(current.hardware_telemetry);
+      renderTelemetry();
       state.demo = current.demo || state.demo;
       state.incidents = incidents.incidents || [];
       state.actions = actions.actions || [];
@@ -284,6 +333,7 @@ async function loadNotificationStatus() {
   }
 
   function renderAll() {
+    renderTelemetry();
     renderCurrent();
     renderActions();
     renderLocation();
@@ -672,6 +722,8 @@ async function loadNotificationStatus() {
 
   async function boot() {
     bindEvents();
+    // Keep the "N s ago" / stale indicator current between readings.
+    window.setInterval(renderTelemetry, 1000);
     try {
       const payload = await request("/api/auth/me");
       showApp(payload.user);

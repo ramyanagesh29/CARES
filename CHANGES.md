@@ -26,3 +26,17 @@ authentication, the heart-rate hardware path, and the dashboard layout.
 
 ## Removed from the package (private runtime data)
 `data/cares.sqlite3-wal` and `data/cares.sqlite3-shm` (your local database files). No `.env` was present.
+
+---
+
+# ESP32 BPM telemetry update (second change set)
+Additive only (609 lines added, none removed). See `docs/ESP32_TELEMETRY_GUIDE.md`.
+
+| File | Change |
+| --- | --- |
+| `backend/db.py` | New `hardware_telemetry` table and index. |
+| `backend/services.py` | `record_hardware_telemetry()`, `latest_hardware_telemetry()`, `hardware_telemetry` EventBus event. |
+| `backend/api.py` | `POST /api/hardware/telemetry`; `hardware_telemetry` added to `GET /api/dashboard/current`. |
+| `frontend/index.html`, `app.js`, `styles.css` | Separate "ESP32 LIVE BPM" card with live updates and stale/unavailable states. |
+| `tests/test_hardware_telemetry.py` | 53 new tests. |
+| `docs/ESP32_TELEMETRY_GUIDE.md` | Guide. |

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import re
 import threading
 import time
@@ -56,6 +57,13 @@ ACTION_STATUSES = {
     "FAILED",
     "UNAVAILABLE",
 }
+
+# ESP32 telemetry (display only). Same BPM plausibility range as the existing
+# /api/hardware/ingest route. Only the newest rows per user are kept so the
+# table cannot grow without bound on a small database.
+TELEMETRY_MIN_BPM = 30.0
+TELEMETRY_MAX_BPM = 220.0
+TELEMETRY_RETENTION_ROWS = 5000
 
 # A GPS fix older than this is never presented to a guardian as the current
 # location. Override with CARES_LOCATION_MAX_AGE_SECONDS.
@@ -904,6 +912,84 @@ class CARESBackend:
         if row is None:
             raise NotFoundError("Location event not found.")
         return dict(row)
+
+    # ------------------------- hardware telemetry ------------------------
+    # Raw ESP32 readings for display only. This path never touches the risk
+    # engine: it creates no engine events, incidents, actions or SMS.
+
+    def record_hardware_telemetry(
+        self,
+        user_id: int,
+        device_id: Any,
+        heart_rate: Any,
+        latitude: Any = None,
+        longitude: Any = None,
+        timestamp: Optional[float] = None,
+    ) -> dict[str, Any]:
+        _validate_user_id(self.database, user_id)
+
+        if not isinstance(device_id, str) or not device_id.strip() or len(device_id.strip()) > 80:
+            raise ValidationError("device_id must be a non-empty string of at most 80 characters.")
+        device_id = device_id.strip()
+
+        if isinstance(heart_rate, bool) or not isinstance(heart_rate, (int, float)):
+            raise ValidationError("heart_rate must be numeric.")
+        bpm = float(heart_rate)
+        if not math.isfinite(bpm) or not TELEMETRY_MIN_BPM <= bpm <= TELEMETRY_MAX_BPM:
+            raise ValidationError(
+                f"heart_rate must be between {TELEMETRY_MIN_BPM:g} and {TELEMETRY_MAX_BPM:g} BPM."
+            )
+
+        lat: Optional[float] = None
+        lon: Optional[float] = None
+        if latitude is not None or longitude is not None:
+            if latitude is None or longitude is None:
+                raise ValidationError("Both latitude and longitude are required when sending GPS.")
+            for value in (latitude, longitude):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValidationError("latitude and longitude must be numeric.")
+            lat, lon = float(latitude), float(longitude)
+            if not math.isfinite(lat) or not -90.0 <= lat <= 90.0:
+                raise ValidationError("latitude must be between -90 and 90.")
+            if not math.isfinite(lon) or not -180.0 <= lon <= 180.0:
+                raise ValidationError("longitude must be between -180 and 180.")
+            if lat == 0.0 and lon == 0.0:
+                raise ValidationError(
+                    "latitude/longitude 0,0 means no GPS fix; omit GPS until a valid fix exists."
+                )
+
+        stamp = time.time() if timestamp is None else float(timestamp)
+        cursor = self.database.execute(
+            "INSERT INTO hardware_telemetry(user_id, device_id, heart_rate, latitude, longitude, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, device_id, bpm, lat, lon, stamp),
+        )
+        row_id = int(cursor.lastrowid)
+        # Bounded retention: drop rows older than the newest N for this user.
+        self.database.execute(
+            "DELETE FROM hardware_telemetry WHERE user_id = ? AND id <= ?",
+            (user_id, row_id - TELEMETRY_RETENTION_ROWS),
+        )
+        record = self._telemetry_row(
+            self.database.fetch_one("SELECT * FROM hardware_telemetry WHERE id = ?", (row_id,))
+        )
+        self.events.publish(user_id, {"type": "hardware_telemetry", "data": record})
+        return record
+
+    def latest_hardware_telemetry(self, user_id: int) -> Optional[dict[str, Any]]:
+        _validate_user_id(self.database, user_id)
+        row = self.database.fetch_one(
+            "SELECT * FROM hardware_telemetry WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        return self._telemetry_row(row) if row else None
+
+    @staticmethod
+    def _telemetry_row(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["age_seconds"] = max(time.time() - float(item["timestamp"]), 0.0)
+        item["source"] = "ESP32_TELEMETRY"
+        return item
 
     # ------------------------- actions and incidents ---------------------
 

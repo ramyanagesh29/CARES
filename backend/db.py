@@ -148,6 +148,20 @@ CREATE TABLE IF NOT EXISTS baseline_adaptation_events (
     source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
+-- Raw ESP32 telemetry for dashboard display only. Intentionally separate from
+-- engine_events: nothing stored here feeds the risk engine, incidents or SMS.
+CREATE TABLE IF NOT EXISTS hardware_telemetry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    heart_rate REAL NOT NULL,
+    latitude REAL,
+    longitude REAL,
+    timestamp REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telemetry_user_time
+    ON hardware_telemetry(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_engine_events_user_time
     ON engine_events(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_actions_user_time

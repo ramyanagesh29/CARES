@@ -378,6 +378,33 @@ class CARESAPI:
                 {},
 
             )
+        # ESP32 BPM telemetry: display-only, device-token authenticated. It
+        # deliberately never calls the risk engine, creates incidents or sends
+        # SMS. Kept before the user-session barrier like /api/hardware/ingest.
+        if path == "/api/hardware/telemetry" and method == "POST":
+            hardware_user_id, error_response = self._authenticate_device(headers)
+            if error_response is not None:
+                return error_response
+            received_at = time.time()
+            event_time, timestamp_source, timestamp_note = self._device_timestamp(
+                body.get("timestamp"), received_at
+            )
+            record = self.backend.record_hardware_telemetry(
+                hardware_user_id,
+                body.get("device_id", "CARES_ESP32_01"),
+                body.get("heart_rate"),
+                body.get("latitude"),
+                body.get("longitude"),
+                timestamp=event_time,
+            )
+            return 201, {
+                "ok": True,
+                "telemetry": record,
+                "timestamp_source": timestamp_source,
+                "timestamp_note": timestamp_note,
+                "risk_engine_invoked": False,
+            }, {}
+
         # ESP32 device-authenticated ingestion (GPS location + timestamp, with an
         # optional MAX30102 heart-rate/SpO2 reading). Keep this route
         # before the user-session authentication barrier below.
@@ -749,6 +776,8 @@ class CARESAPI:
             current = self.backend.get_current(user_id)
 
             current["demo"] = self.demo_controller.status(user_id)
+            # Raw ESP32 BPM, kept separate from the risk-engine output above.
+            current["hardware_telemetry"] = self.backend.latest_hardware_telemetry(user_id)
 
             if current["demo"].get("active"):
 
@@ -1038,6 +1067,41 @@ class CARESAPI:
             )
 
         raise NotFoundError("Route not found.")
+
+    @staticmethod
+    def _authenticate_device(headers: Mapping[str, str]) -> tuple[Optional[int], Optional[tuple[int, dict[str, Any], dict[str, str]]]]:
+        """Device-token check shared by hardware routes.
+
+        Returns (hardware_user_id, None) on success or (None, error_response).
+        Same rules as /api/hardware/ingest: 503 when the server is not
+        configured, 401 for a missing/wrong X-Device-Token.
+        """
+
+        expected_token = os.environ.get("CARES_DEVICE_TOKEN", "")
+        supplied_token = next(
+            (value for key, value in headers.items() if key.lower() == "x-device-token"),
+            "",
+        )
+        if not expected_token:
+            return None, (503, {"ok": False, "error": "Hardware device token is not configured."}, {})
+        if not supplied_token or not hmac.compare_digest(
+            supplied_token.encode("utf-8"), expected_token.encode("utf-8")
+        ):
+            return None, (401, {"ok": False, "error": "Invalid device token."}, {})
+        try:
+            hardware_user_id = int(os.environ.get("CARES_HARDWARE_USER_ID", ""))
+            if hardware_user_id <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return None, (
+                503,
+                {
+                    "ok": False,
+                    "error": "Set CARES_HARDWARE_USER_ID to an existing positive numeric user ID.",
+                },
+                {},
+            )
+        return hardware_user_id, None
 
     @staticmethod
     def _demo_real_sms_flag(body: Mapping[str, Any]) -> bool:
