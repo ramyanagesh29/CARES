@@ -149,7 +149,7 @@ class DemoController:
         self.adapter = adapter or DemoSampleAdapter()
         configured = interval_seconds
         if configured is None:
-            configured = float(os.getenv("CARES_DEMO_INTERVAL_SECONDS", "0.02"))
+            configured = float(os.getenv("CARES_DEMO_INTERVAL_SECONDS", "0.005"))
         self.interval_seconds = max(0.001, float(configured))
         self._runs: dict[int, _DemoRun] = {}
         self._last_status: dict[int, dict[str, object]] = {}

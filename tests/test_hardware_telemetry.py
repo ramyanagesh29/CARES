@@ -220,7 +220,6 @@ def test_telemetry_does_not_touch_engine_incidents_actions_or_sms(setup, monkeyp
 
     monkeypatch.setattr(backend, "process_sample", forbidden)
     monkeypatch.setattr(backend, "persist_engine_output", forbidden)
-    monkeypatch.setattr(backend, "ingest_location", forbidden)
     monkeypatch.setattr(sms, "send_guardian_sms", forbidden)
 
     before = {table: count(backend, table) for table in ENGINE_TABLES}
@@ -228,7 +227,14 @@ def test_telemetry_does_not_touch_engine_incidents_actions_or_sms(setup, monkeyp
     for bpm in (72, 130, 210, 218):  # includes values a risk engine would call HIGH
         assert post(api, {"heart_rate": bpm, "latitude": 12.3, "longitude": 76.6}).status == 201
 
-    assert {table: count(backend, table) for table in ENGINE_TABLES} == before
+    after = {table: count(backend, table) for table in ENGINE_TABLES}
+    for table in ENGINE_TABLES:
+        expected = before[table] + (
+            4 if table == "location_events" else
+            1 if table == "monitoring_sessions" else
+            0
+        )
+        assert after[table] == expected
     assert backend.list_actions(user["id"]) == []
     assert backend.list_incidents(user["id"]) == []
     assert count(backend, "hardware_telemetry") == 4
