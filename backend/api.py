@@ -1068,13 +1068,14 @@ class CARESAPI:
 
         raise NotFoundError("Route not found.")
 
-    @staticmethod
-    def _authenticate_device(headers: Mapping[str, str]) -> tuple[Optional[int], Optional[tuple[int, dict[str, Any], dict[str, str]]]]:
+    def _authenticate_device(self, headers: Mapping[str, str]) -> tuple[Optional[int], Optional[tuple[int, dict[str, Any], dict[str, str]]]]:
         """Device-token check shared by hardware routes.
 
         Returns (hardware_user_id, None) on success or (None, error_response).
         Same rules as /api/hardware/ingest: 503 when the server is not
-        configured, 401 for a missing/wrong X-Device-Token.
+        configured, 401 for a missing/wrong X-Device-Token. The token is
+        always checked first, so a caller without it learns nothing about
+        the server configuration.
         """
 
         expected_token = os.environ.get("CARES_DEVICE_TOKEN", "")
@@ -1098,6 +1099,26 @@ class CARESAPI:
                 {
                     "ok": False,
                     "error": "Set CARES_HARDWARE_USER_ID to an existing positive numeric user ID.",
+                },
+                {},
+            )
+        # The configured ID must belong to an existing user in THIS database.
+        # (A redeploy onto a fresh/ephemeral SQLite file restarts IDs at 1, so a
+        # stale CARES_HARDWARE_USER_ID would otherwise surface as a confusing
+        # "User not found." 404.) This is a server-configuration problem, not a
+        # missing resource, so report it as 503 with an actionable message.
+        try:
+            self.backend.user(hardware_user_id)
+        except NotFoundError:
+            return None, (
+                503,
+                {
+                    "ok": False,
+                    "error": (
+                        f"CARES_HARDWARE_USER_ID={hardware_user_id} does not match any user "
+                        "in this server's database. Log in to the dashboard, open /api/auth/me "
+                        "to see your user id, and set CARES_HARDWARE_USER_ID to it."
+                    ),
                 },
                 {},
             )

@@ -40,3 +40,11 @@ Additive only (609 lines added, none removed). See `docs/ESP32_TELEMETRY_GUIDE.m
 | `frontend/index.html`, `app.js`, `styles.css` | Separate "ESP32 LIVE BPM" card with live updates and stale/unavailable states. |
 | `tests/test_hardware_telemetry.py` | 53 new tests. |
 | `docs/ESP32_TELEMETRY_GUIDE.md` | Guide. |
+
+---
+
+# Telemetry hotfix: stale `CARES_HARDWARE_USER_ID`
+`backend/api.py`: `_authenticate_device()` now checks that `CARES_HARDWARE_USER_ID` belongs to an existing user and returns
+an actionable `503` instead of a bare `404 User not found.` (device token is still checked first). `tests/test_hardware_telemetry.py`:
+13 new/updated tests (66 in that file). `docs/ESP32_TELEMETRY_GUIDE.md`: troubleshooting table. No change to the risk engine,
+SMS, database schema, `/api/hardware/ingest`, or token authentication.
