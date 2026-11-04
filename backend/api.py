@@ -894,29 +894,12 @@ class CARESAPI:
             )
 
         if path == "/api/location/latest" and method == "GET":
-
-            demo = self.demo_controller.status(user_id)
-
+            # Hardware GPS is independent of synthetic demo playback.
+            # A running demo must not hide the latest genuine location event.
             return (
-
                 200,
-
-                {
-
-                    "location": (
-
-                        None
-
-                        if demo.get("active")
-
-                        else self.backend.latest_location(user_id)
-
-                    )
-
-                },
-
+                {"location": self.backend.latest_location(user_id)},
                 {},
-
             )
 
         #* Actions*

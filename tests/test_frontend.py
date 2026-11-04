@@ -30,7 +30,6 @@ def test_frontend_consumes_engine_contract_without_threshold_logic():
         "/api/demo/start",
         "/api/demo/stop",
         "/api/demo/status",
-        "DEMO_WESAD",
         "DEMO_SYNTHETIC",
         "session_id",
     ):
@@ -58,8 +57,9 @@ def test_frontend_has_explicit_unavailable_states_and_action_statuses():
 def test_frontend_exposes_demo_controls_and_safe_demo_location_state():
     html = (FRONTEND / "index.html").read_text(encoding="utf-8")
     javascript = (FRONTEND / "app.js").read_text(encoding="utf-8")
-    for scenario in ("NORMAL", "ELEVATED", "SUSTAINED_HIGH", "RECOVERY"):
+    for scenario in ("ELEVATED", "SUSTAINED_HIGH", "RECOVERY"):
         assert scenario in html
+    assert 'value="NORMAL">NORMAL · Official WESAD</option>' in html  # official WESAD selector remains available
     assert "Hardware location unavailable in demonstration mode" in javascript
     assert "DEMO BASELINE" in javascript
     assert "REAL HARDWARE" in javascript

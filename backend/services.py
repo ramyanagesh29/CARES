@@ -974,6 +974,22 @@ class CARESBackend:
             self.database.fetch_one("SELECT * FROM hardware_telemetry WHERE id = ?", (row_id,))
         )
         self.events.publish(user_id, {"type": "hardware_telemetry", "data": record})
+
+        # GPS from the ESP32 telemetry endpoint must also enter the existing
+        # location_events pipeline so /api/location/latest and the map can use it.
+        # This remains display/location-only: never invoke the risk engine,
+        # create incidents, or execute guardian/SMS actions from this path.
+        if lat is not None and lon is not None:
+            self.ingest_location(
+                user_id,
+                {
+                    "latitude": lat,
+                    "longitude": lon,
+                    "accuracy": None,
+                    "timestamp": stamp,
+                    "source": "ESP32_TELEMETRY",
+                },
+            )
         return record
 
     def latest_hardware_telemetry(self, user_id: int) -> Optional[dict[str, Any]]:
