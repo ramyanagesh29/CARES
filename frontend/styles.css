@@ -2685,3 +2685,7 @@ button {
   font-size: 0.85rem;
   color: inherit;
 }
+
+#esp32-card.is-stale .metric-value {
+  opacity: 0.55;
+}

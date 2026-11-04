@@ -201,6 +201,20 @@
             </div>
           </article>
 
+          <!-- Raw ESP32 BPM telemetry. Deliberately outside #dashboard-content so it
+               shows even before the risk engine has produced its first event. -->
+          <section id="esp32-telemetry" class="metric-grid" aria-live="polite" aria-label="ESP32 live BPM">
+            <article id="esp32-card" class="metric-card metric-card-featured">
+              <div class="metric-icon teal-icon">♥</div>
+              <div>
+                <p class="metric-label">ESP32 LIVE BPM</p>
+                <p class="metric-value"><span id="esp32-bpm">—</span><small>BPM</small></p>
+                <p id="esp32-caption" class="metric-caption">No ESP32 reading received yet</p>
+                <p class="metric-caption">Raw hardware reading · display only · not used for risk decisions</p>
+              </div>
+            </article>
+          </section>
+
           <div id="dashboard-empty" class="empty-state is-hidden">
             <div class="empty-icon">⌁</div>
             <h2>Waiting for your first engine event</h2>
