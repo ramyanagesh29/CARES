@@ -122,3 +122,11 @@ Then open the Pull Request into `master`, review, merge.
 - No rate limiting on the device route. Retention (5000 rows/user) bounds storage.
 - Server-sent events are in-memory and per process: run a single instance.
 - A BPM on the dashboard is a raw reading, not clinically validated, and is deliberately not used for risk decisions.
+
+## Troubleshooting: telemetry returns an error
+| Response | Meaning | Fix |
+| --- | --- | --- |
+| `401 Invalid device token.` | `X-Device-Token` does not equal Render's `CARES_DEVICE_TOKEN` | Correct the token in the firmware or in Render |
+| `503 ... CARES_HARDWARE_USER_ID=N does not match any user in this server's database` | The ID in Render points at a user that is not in the database the server is using now. IDs start at 1 in every new database, so after a redeploy onto a fresh/ephemeral SQLite file the old number is stale. | Log in to the dashboard, open `/api/auth/me`, copy `user.id` into `CARES_HARDWARE_USER_ID`, save in Render. Then attach a persistent disk and set `CARES_DB_PATH` so it does not happen again. |
+| `503 ... not configured` | `CARES_DEVICE_TOKEN` or `CARES_HARDWARE_USER_ID` is missing or not a positive integer | Set it in Render |
+| `422` | Invalid BPM or GPS value | See the API section |

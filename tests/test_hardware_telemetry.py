@@ -151,7 +151,8 @@ def test_unknown_hardware_user_is_rejected_cleanly(setup, monkeypatch):
     backend, _, api = setup
     monkeypatch.setenv("CARES_HARDWARE_USER_ID", "9999")
     response = post(api, {"heart_rate": 70})
-    assert response.status in (404, 422)
+    assert response.status == 503
+    assert "CARES_HARDWARE_USER_ID=9999" in response.body["error"]
     assert count(backend, "hardware_telemetry") == 0
 
 
@@ -373,3 +374,101 @@ def test_frontend_listens_for_telemetry_event_and_reads_dashboard_field():
     assert 'new EventSource("/api/events/stream")' in js
     assert "No ESP32 reading received yet" in js
     assert "esp32-bpm" not in js.split("function setFields")[1].split("function renderCurrent")[0]
+
+
+# ----------------------------------------- hardware user configuration
+
+
+def test_valid_hardware_user_records_telemetry_for_that_user(setup):
+    backend, user, api = setup
+    response = post(api, {"heart_rate": 76.4, "device_id": "CARES_ESP32_01"})
+    assert response.status == 201
+    assert response.body["telemetry"]["user_id"] == user["id"]
+    assert backend.latest_hardware_telemetry(user["id"])["heart_rate"] == pytest.approx(76.4)
+
+
+@pytest.mark.parametrize("bad_id", ["", "abc", "0", "-1", "1.5", " "])
+def test_missing_or_malformed_hardware_user_id_returns_503(setup, monkeypatch, bad_id):
+    backend, _, api = setup
+    monkeypatch.setenv("CARES_HARDWARE_USER_ID", bad_id)
+    response = post(api, {"heart_rate": 70})
+    assert response.status == 503
+    assert "CARES_HARDWARE_USER_ID" in response.body["error"]
+    assert count(backend, "hardware_telemetry") == 0
+
+
+def test_nonexistent_hardware_user_returns_actionable_503_not_user_not_found(setup, monkeypatch):
+    backend, user, api = setup
+    monkeypatch.setenv("CARES_HARDWARE_USER_ID", str(user["id"] + 5))
+    response = post(api, {"heart_rate": 70})
+    assert response.status == 503
+    assert response.body["ok"] is False
+    assert response.body["error"] != "User not found."
+    assert "/api/auth/me" in response.body["error"]
+    assert count(backend, "hardware_telemetry") == 0
+
+
+def test_invalid_token_is_rejected_before_user_check_and_leaks_nothing(setup, monkeypatch):
+    _, _, api = setup
+    monkeypatch.setenv("CARES_HARDWARE_USER_ID", "9999")   # misconfigured on purpose
+    response = post(api, {"heart_rate": 70}, headers={"X-Device-Token": "wrong"})
+    assert response.status == 401
+    assert "CARES_HARDWARE_USER_ID" not in str(response.body)
+
+
+def test_misconfigured_hardware_user_never_reaches_engine_or_sms(setup, monkeypatch):
+    backend, user, api = setup
+    backend.add_guardian(user["id"], "Guardian", "+91 9876543210", "parent")
+    monkeypatch.setenv("CARES_HARDWARE_USER_ID", "9999")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must not run")
+
+    monkeypatch.setattr(backend, "process_sample", forbidden)
+    monkeypatch.setattr(sms, "send_guardian_sms", forbidden)
+    assert post(api, {"heart_rate": 70}).status == 503
+    assert backend.list_actions(user["id"]) == []
+
+
+def test_recording_telemetry_preserves_existing_accounts(setup):
+    backend, user, api = setup
+    backend.register("Second", "b@example.com", "password-two")
+    before = backend.database.fetch_all("SELECT id, email, password_hash FROM users ORDER BY id")
+
+    assert post(api, {"heart_rate": 70}).status == 201
+
+    after = backend.database.fetch_all("SELECT id, email, password_hash FROM users ORDER BY id")
+    assert [tuple(r) for r in before] == [tuple(r) for r in after]
+    backend.login("a@example.com", "password-one")      # existing logins still work
+
+
+def test_fresh_database_after_redeploy_scenario(tmp_path, monkeypatch):
+    """Reproduces the Render symptom: a stale CARES_HARDWARE_USER_ID against a
+    brand-new database, then the fix: pointing it at the real user's id."""
+
+    old = CARESBackend(db_path=str(tmp_path / "old.sqlite3"))
+    old_ids = [old.register(f"U{i}", f"u{i}@x.com", "password-one")["id"] for i in range(1, 4)]
+    monkeypatch.setenv("CARES_HARDWARE_USER_ID", str(old_ids[-1]))      # e.g. 3
+
+    fresh = CARESBackend(db_path=str(tmp_path / "fresh.sqlite3"))       # ephemeral disk wiped
+    new_user = fresh.register("New", "new@x.com", "password-one")
+    assert new_user["id"] == 1                                          # ids restart at 1
+    api = CARESAPI(fresh)
+
+    with pytest.raises(Exception):
+        fresh.login("u3@x.com", "password-one")                         # old account is gone
+
+    stale = post(api, {"heart_rate": 76.4})
+    assert stale.status == 503 and "CARES_HARDWARE_USER_ID=3" in stale.body["error"]
+
+    monkeypatch.setenv("CARES_HARDWARE_USER_ID", str(new_user["id"]))   # the one-time config fix
+    assert post(api, {"heart_rate": 76.4}).status == 201
+    assert fresh.latest_hardware_telemetry(new_user["id"])["heart_rate"] == pytest.approx(76.4)
+
+
+def test_user_id_is_an_integer_matching_the_env_format(setup):
+    backend, user, _ = setup
+    assert isinstance(user["id"], int)
+    _, token = backend.login("a@example.com", "password-one")
+    me = CARESAPI(backend).handle("GET", "/api/auth/me", None, {"Authorization": f"Bearer {token}"})
+    assert me.body["user"]["id"] == user["id"]                          # what to copy into Render
