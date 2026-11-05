@@ -74,8 +74,16 @@
   // Display simulated SMS separately from real delivery statuses.
   function actionStatusLabel(value) {
     const status = String(value || "UNKNOWN").toUpperCase();
-    // PENDING means the provider accepted the request; it is not delivery.
-    return status === "MOCK_SENT" ? "MOCK_SENT · SIMULATED" : status;
+    const labels = {
+      GENERATED: "Action created",
+      PENDING: "Provider accepted · awaiting delivery",
+      SENT: "Sent to provider · delivery unconfirmed",
+      DELIVERED: "Delivered successfully",
+      MOCK_SENT: "Demo only · no real SMS sent",
+      FAILED: "Failed to send",
+      UNAVAILABLE: "Notification service unavailable",
+    };
+    return labels[status] || status.replaceAll("_", " ");
   }
 
   function actionStatusSymbol(value) {
@@ -282,9 +290,53 @@ async function loadNotificationStatus() {
       state.location = event.data;
       renderLocation();
       refreshSecondaryData();
-    } else if (event.type === "guardian_action" && event.data) {
-      state.actions = [event.data, ...state.actions.filter((item) => item.id !== event.data.id)].slice(0, 100);
-      renderActions();
+    
+} else if (event.type === "guardian_action" && event.data) {
+  const action = event.data;
+
+  state.actions = [
+    action,
+    ...state.actions.filter((item) => item.id !== action.id)
+  ].slice(0, 100);
+
+  const actionStatus = String(action.status || "").toUpperCase();
+  const metadata = action.metadata || {};
+
+  if (action.action_type === "GUARDIAN_NOTIFICATION") {
+    const recipients = Array.isArray(metadata.recipients)
+      ? metadata.recipients
+      : [];
+
+    const successfulRecipients = recipients.filter(
+      (recipient) => recipient.success
+    );
+
+    const recipientNames = successfulRecipients
+      .map((recipient) => recipient.guardian_name)
+      .filter(Boolean);
+
+    const recipientText = recipientNames.length
+      ? ` to ${recipientNames.join(", ")}`
+      : "";
+
+    if (actionStatus === "DELIVERED") {
+      notify(`✓ SMS delivered successfully${recipientText}.`);
+    } else if (actionStatus === "PENDING") {
+      notify(`SMS accepted by TextBee${recipientText}. Delivery is not confirmed yet.`);
+    } else if (actionStatus === "SENT") {
+      notify(`SMS sent to the provider${recipientText}. Delivery is not confirmed yet.`);
+    } else if (actionStatus === "MOCK_SENT") {
+      notify("Demo notification simulated. No real SMS was sent.");
+    } else if (actionStatus === "FAILED") {
+      notify("Guardian SMS failed. Please check the provider configuration.");
+    } else if (actionStatus === "UNAVAILABLE") {
+      notify("Guardian notification unavailable. Check guardian contacts and SMS configuration.");
+    }
+  }
+
+  renderActions();
+} else if (event.type === "incident" && event.data) {
+
     } else if (event.type === "incident" && event.data) {
       state.incidents = [event.data, ...state.incidents.filter((item) => item.id !== event.data.id)].slice(0, 100);
       renderIncidents();
@@ -399,8 +451,15 @@ async function loadNotificationStatus() {
     const stop = $("#demo-stop");
     if (!start || !stop) return;
     start.disabled = active;
-    stop.disabled = !active;
-    $("#demo-status").textContent = active ? `${demo.source || "DEMO"} · ${demo.scenario || "ACTIVE"} · ${demo.sample_count || 0} samples` : (demo.error ? `Error: ${demo.error}` : "Stopped");
+    // Keep Live Hardware clickable so users can always leave demo mode.
+    stop.disabled = false;
+    start.classList.toggle("mode-selected", active);
+    stop.classList.toggle("mode-selected", !active);
+    start.setAttribute("aria-pressed", String(active));
+    stop.setAttribute("aria-pressed", String(!active));
+    $("#demo-status").textContent = active
+      ? `${demo.source || "SYNTHETIC DEMO"} · ${demo.scenario || "ACTIVE"} · ${demo.sample_count || 0} samples`
+      : (demo.error ? `Error: ${demo.error}` : "Live hardware mode selected · waiting for actual sensor data");
     $("#demo-status").classList.toggle("is-active", active);
     $("#demo-status").classList.toggle("is-error", Boolean(demo.error));
     const sessionId = demo.session?.id || state.current?.session?.id || "—";
@@ -437,106 +496,137 @@ async function loadNotificationStatus() {
   }
 
   function renderLocation() {
-  const location = state.location;
+    const location = state.location;
+    const username = state.user?.name || "there";
+    const isDemo = Boolean(state.demo?.active) ||
+      String(currentEvent()?.source || "").startsWith("DEMO_");
 
-  $("#settings-gps").textContent = location ? "Connected" : "Not connected";
+    $("#settings-gps").textContent = location ? "Connected" : "Not connected";
 
-  // Handle unavailable GPS location
-  if (!location) {
-    const unavailable =
-      state.demo?.active ||
-      String(currentEvent()?.source || "").startsWith("DEMO_")
-        ? "Hardware location unavailable in demonstration mode."
-        : "Hardware location unavailable.";
+    // Keep the user's name visible even while the hardware GPS is unavailable.
+    if (!location) {
+      const message = isDemo
+        ? "Synthetic demo is active. It does not provide hardware GPS."
+        : "Waiting for actual GPS coordinates from your CARES hardware.";
 
-    $("#dashboard-location").innerHTML =
-      `<div class="empty-inline">${escapeHTML(unavailable)}</div>`;
+      $("#dashboard-location").innerHTML = `
+        <div class="location-card">
+          <h3>Current Location</h3>
+          <p>Hello, ${escapeHTML(username)}! Your location will appear here.</p>
+          <p class="location-status-text">${escapeHTML(message)}</p>
+        </div>
+      `;
 
-    $("#location-details").innerHTML =
-      '<div class="empty-inline">No hardware location event has been received.</div>';
+      $("#location-details").innerHTML = `
+        <div class="location-card">
+          <h3>Hello, ${escapeHTML(username)}!</h3>
+          <p>Your location is not available yet.</p>
+          <p class="location-status-text">${escapeHTML(message)}</p>
+          <p>CARES will display the location only after receiving valid coordinates from the connected GPS hardware.</p>
+        </div>
+      `;
 
-    $("#map-container").innerHTML = `
-      <div class="map-empty">
-        <span>⌖</span>
-        <p>Map unavailable until hardware coordinates arrive.</p>
+      $("#map-container").innerHTML = `
+        <div class="map-empty">
+          <span>⌖</span>
+          <p>Waiting for actual hardware GPS coordinates.</p>
+        </div>
+      `;
+
+      const disclaimer = $("#map-container").nextElementSibling;
+      if (disclaimer) {
+        disclaimer.textContent =
+          "The map will use real GPS coordinates received from CARES hardware. No location is estimated or generated.";
+      }
+
+      $("#location-notice").innerHTML = `
+        <span class="notice-icon">⌖</span>
+        <div>
+          <strong>${escapeHTML(message)}</strong>
+          <p>Hello, ${escapeHTML(username)}. Only actual hardware coordinates will be shown here.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const lat = Number(location.latitude);
+    const lon = Number(location.longitude);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) ||
+        lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      $("#dashboard-location").innerHTML = `
+        <div class="location-card">
+          <h3>Current Location</h3>
+          <p>Hello, ${escapeHTML(username)}! GPS data was received, but the coordinates are invalid.</p>
+        </div>
+      `;
+      $("#location-details").innerHTML =
+        '<div class="empty-inline">Invalid GPS coordinates received from hardware.</div>';
+      $("#map-container").innerHTML = `
+        <div class="map-empty"><span>⌖</span><p>Invalid GPS coordinates.</p></div>
+      `;
+      return;
+    }
+
+    const address = location.formatted_address || location.address ||
+      `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+
+    $("#dashboard-location").innerHTML = `
+      <div class="location-card">
+        <h3>Current Location</h3>
+        <p>Hello, ${escapeHTML(username)}! Your location is available.</p>
+        <p>${escapeHTML(address)}</p>
+        <p class="location-status-text">GPS coordinates received from hardware.</p>
       </div>
     `;
 
-    if ($("#map-container").nextElementSibling) {
-      $("#map-container").nextElementSibling.textContent =
-        "Map links use the actual coordinates supplied by hardware. No location is generated by CARES.";
+    const details = [
+      ["Address", address],
+      ["Latitude", lat.toFixed(6)],
+      ["Longitude", lon.toFixed(6)],
+      ["Source", location.source || location.device_id || "Hardware GPS"],
+      ["Accuracy", location.accuracy_m == null ? "Not provided by hardware" : `${number(location.accuracy_m, 1)} m`],
+      ["Updated", timestamp(location.timestamp || location.created_at)],
+    ];
+    $("#location-details").innerHTML = `
+      <div class="location-card">
+        <h3>Hello, ${escapeHTML(username)}! Your location is here.</h3>
+        <p class="location-status-text">These details come from the actual hardware GPS event.</p>
+        <dl class="location-data-list">
+          ${details.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("")}
+        </dl>
+      </div>
+    `;
+
+    const delta = 0.01;
+    const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
+    const mapSrc =
+      `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lon}`)}`;
+    const mapLink =
+      `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`;
+
+    $("#map-container").innerHTML = `
+      <iframe title="Map of current hardware location" loading="lazy" src="${mapSrc}"></iframe>
+    `;
+
+    const disclaimer = $("#map-container").nextElementSibling;
+    if (disclaimer) {
+      disclaimer.innerHTML = `
+        <a href="${mapLink}" target="_blank" rel="noopener noreferrer">
+          Open actual hardware coordinates in Google Maps ↗
+        </a>
+      `;
     }
 
     $("#location-notice").innerHTML = `
       <span class="notice-icon">⌖</span>
       <div>
-        <strong>${escapeHTML(unavailable)}</strong>
-        <p>Only actual hardware coordinates will be displayed here.</p>
+        <strong>Hello, ${escapeHTML(username)}! Your GPS location is available.</strong>
+        <p>Map and address are based on coordinates received from the hardware.</p>
       </div>
     `;
-
-    return;
   }
 
-  // Get the logged-in user's name
-  const username = state.user?.name || "User";
-
-  // Read actual GPS coordinates
-  const lat = Number(location.latitude);
-  const lon = Number(location.longitude);
-
-  // Display friendly username-based location message
-  $("#dashboard-location").innerHTML = `
-    <div class="location-card">
-      <h3>Current Location</h3>
-      <p>Yes, ${escapeHTML(username)}, your location is here!</p>
-      <p>Your current GPS location is displayed on the map.</p>
-    </div>
-  `;
-
-  // Validate GPS coordinates before displaying the map
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-    $("#map-container").innerHTML = `
-      <div class="map-empty">
-        <span>⌖</span>
-        <p>Invalid GPS coordinates received from hardware.</p>
-      </div>
-    `;
-
-    return;
-  }
-
-  // Create map using actual ESP32 GPS coordinates
-  const delta = 0.01;
-
-  const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
-
-  const mapSrc =
-    `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lon}`)}`;
-
-  const mapLink =
-    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`;
-
-  // Display OpenStreetMap
-  $("#map-container").innerHTML = `
-    <iframe
-      title="Map of current hardware location"
-      loading="lazy"
-      src="${mapSrc}">
-    </iframe>
-  `;
-
-  // Google Maps link
-  const disclaimer = $("#map-container").nextElementSibling;
-
-  if (disclaimer) {
-    disclaimer.innerHTML = `
-      <a href="${mapLink}" target="_blank" rel="noreferrer">
-        Open these coordinates in Google Maps ↗
-      </a>
-    `;
-  }
-}
   function renderBaseline() {
     const event = currentEvent();
     const baseline = state.baseline;
@@ -748,16 +838,28 @@ async function loadNotificationStatus() {
   }
 
   async function stopDemo() {
-    $("#demo-stop").disabled = true;
+    const stopButton = $("#demo-stop");
+    stopButton.disabled = true;
+
+    // Live hardware is the default stream. Only call the stop endpoint when
+    // a synthetic/demo session is actually active.
+    if (!state.demo?.active) {
+      state.demo = { ...state.demo, active: false };
+      renderDemo();
+      try { await loadData(); } catch (_) {}
+      notify("Live hardware mode selected. CARES is waiting for real ESP32/GPS readings.");
+      return;
+    }
+
     try {
       const payload = await request("/api/demo/stop", { method: "POST" });
-      state.demo = payload.demo;
+      state.demo = payload.demo || { active: false };
       renderDemo();
       await loadData();
-      notify("Demo stopped. Its runtime engine state was discarded.");
+      notify("Synthetic demo stopped. Live hardware mode selected; waiting for actual sensor readings.");
     } catch (error) {
       renderDemo();
-      notify(error.message);
+      notify(`Could not switch to live mode: ${error.message}`);
     }
   }
 

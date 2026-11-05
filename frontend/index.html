@@ -178,9 +178,9 @@
 
           <article class="panel demo-control-panel">
             <div>
-              <p class="eyebrow">Temporary demonstration input</p>
-              <h2>Run CARES with a safe demo stream</h2>
-              <p id="demo-description" class="panel-intro">Choose a scenario. The demo produces physiological samples only; the existing CARES engine decides every output.</p>
+              <p class="eyebrow">Monitoring source</p>
+              <h2>Choose Synthetic Demo or Live Hardware</h2>
+              <p id="demo-description" class="panel-intro">Live mode uses actual connected hardware. Synthetic mode is for controlled testing; risk decisions remain with the CARES backend engine.</p>
               <p id="demo-source" class="metric-caption">Data source: — · Monitoring status: STOPPED</p>
             </div>
             <div class="demo-controls">
@@ -195,8 +195,10 @@
                 <input id="demo-real-sms" type="checkbox">
                 <span>Send a real SMS to my guardian(s)</span>
               </label>
-              <button id="demo-start" class="button button-primary" type="button">Start demo</button>
-              <button id="demo-stop" class="button button-secondary" type="button" disabled>Stop demo</button>
+              <div class="mode-toggle" role="group" aria-label="CARES monitoring mode">
+                <button id="demo-stop" class="button button-secondary mode-button mode-selected" type="button" aria-pressed="true">Live Hardware</button>
+                <button id="demo-start" class="button button-primary mode-button" type="button" aria-pressed="false">Synthetic Demo</button>
+              </div>
               <span id="demo-status" class="demo-status">Stopped</span>
             </div>
           </article>
