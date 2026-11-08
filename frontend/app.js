@@ -506,7 +506,7 @@ async function loadNotificationStatus() {
     // Keep the user's name visible even while the hardware GPS is unavailable.
     if (!location) {
       const message = isDemo
-        ? "Synthetic demo is active. It does not provide hardware GPS."
+        ? "Hardware location unavailable in demonstration mode"
         : "Waiting for actual GPS coordinates from your CARES hardware.";
 
       $("#dashboard-location").innerHTML = `
