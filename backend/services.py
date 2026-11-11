@@ -338,7 +338,7 @@ class CARESBackend:
             raise ValidationError("Monitoring session is not active.")
 
                payload = output.to_dict()
-        created_at = utc_now()
+               created_at = utc_now()
 
         notification_action_id = None
         should_notify = False
