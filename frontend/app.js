@@ -21,8 +21,6 @@
     telemetry: null,
     telemetryLocalAt: null,
   };
-  // A telemetry reading older than this is shown as stale (device may be offline).
-  const TELEMETRY_STALE_SECONDS = 30;
   const DEMO_SOURCES = ["DEMO_WESAD", "DEMO_SYNTHETIC"];
   const SESSION_ID_FIELD = "session_id";
 
@@ -63,6 +61,44 @@
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   }
 
+  // Event timestamps are Unix epoch seconds from the backend. Display them in IST.
+  // ISO date strings are also accepted for backward-compatible API responses.
+ function formatIncidentIST(value) {
+  if (value == null || value === "") {
+    return "Timestamp unavailable";
+  }
+
+  let date;
+
+  if (typeof value === "number" || /^\d+(\.\d+)?$/.test(String(value))) {
+    const numericValue = Number(value);
+
+    // Unix epoch timestamps are in seconds.
+    // Demo elapsed-time values must not be converted here.
+    if (numericValue < 1000000000) {
+      return "Timestamp unavailable";
+    }
+
+    date = new Date(numericValue * 1000);
+  } else {
+    date = new Date(value);
+  }
+
+  if (Number.isNaN(date.getTime())) {
+    return "Timestamp unavailable";
+  }
+
+  return date.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  }) + " IST";
+}
   function initials(name) {
     return String(name || "—").split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "—";
   }
@@ -73,18 +109,20 @@
 
   // Display simulated SMS separately from real delivery statuses.
   function actionStatusLabel(value) {
-    const status = String(value || "UNKNOWN").toUpperCase();
-    const labels = {
-      GENERATED: "Action created",
-      PENDING: "Provider accepted · awaiting delivery",
-      SENT: "Sent to provider · delivery unconfirmed",
-      DELIVERED: "Delivered successfully",
-      MOCK_SENT: "Demo only · no real SMS sent",
-      FAILED: "Failed to send",
-      UNAVAILABLE: "Notification service unavailable",
-    };
-    return labels[status] || status.replaceAll("_", " ");
-  }
+  const status = String(value || "UNKNOWN").toUpperCase();
+
+  const labels = {
+    GENERATED: "Action created",
+    PENDING: "Provider accepted · awaiting delivery",
+    SENT: "Sent to provider · delivery unconfirmed",
+    DELIVERED: "Delivered successfully",
+    MOCK_SENT: "MOCK_SENT · SIMULATED · No real SMS sent",
+    FAILED: "Failed to send",
+    UNAVAILABLE: "Notification service unavailable",
+  };
+
+  return labels[status] || status.replaceAll("_", " ");
+}
 
   function actionStatusSymbol(value) {
     const status = String(value || "").toUpperCase();
@@ -128,8 +166,6 @@
   function showAuth(tab = "login") {
     state.eventSource?.close();
     state.eventSource = null;
-    setTelemetry(null);
-    renderTelemetry();
     $("#auth-view").classList.remove("is-hidden");
     $("#app-view").classList.add("is-hidden");
     $$("[data-auth-tab]").forEach((button) => {
@@ -239,115 +275,107 @@ async function loadNotificationStatus() {
     source.addEventListener("cares", handleStreamMessage);
     source.onmessage = handleStreamMessage;
   }
-
   // ---- ESP32 raw BPM telemetry (separate from risk-engine output) ----
-  function setTelemetry(reading) {
-    state.telemetry = reading || null;
-    state.telemetryLocalAt = reading ? Date.now() - (Number(reading.age_seconds) || 0) * 1000 : null;
+const TELEMETRY_STALE_SECONDS = 30;
+
+function setTelemetry(reading) {
+  state.telemetry = reading || null;
+  state.telemetryLocalAt = reading
+    ? Date.now() - (Number(reading.age_seconds) || 0) * 1000
+    : null;
+}
+
+function ageText(seconds) {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  return `${Math.floor(seconds / 3600)} h ago`;
+}
+
+function renderTelemetry() {
+  const value = $("#esp32-bpm");
+  const caption = $("#esp32-caption");
+  const card = $("#esp32-card");
+
+  if (!value || !caption || !card) return;
+
+  const reading = state.telemetry;
+
+  if (!reading || !Number.isFinite(Number(reading.heart_rate))) {
+    value.textContent = "—";
+    caption.textContent = "No ESP32 reading received yet";
+    card.classList.remove("is-stale");
+    return;
   }
 
-  function ageText(seconds) {
-    if (seconds < 60) return `${Math.max(0, Math.round(seconds))} s ago`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
-    return `${Math.floor(seconds / 3600)} h ago`;
-  }
+  const age = Math.max(
+    0,
+    (Date.now() - state.telemetryLocalAt) / 1000
+  );
 
-  function renderTelemetry() {
-    const value = $("#esp32-bpm");
-    const caption = $("#esp32-caption");
-    const card = $("#esp32-card");
-    if (!value || !caption || !card) return;
-    const reading = state.telemetry;
-    if (!reading || !Number.isFinite(Number(reading.heart_rate))) {
-      value.textContent = "—";
-      caption.textContent = "No ESP32 reading received yet";
-      card.classList.remove("is-stale");
-      return;
-    }
-    const age = Math.max(0, (Date.now() - state.telemetryLocalAt) / 1000);
-    const stale = age > TELEMETRY_STALE_SECONDS;
-    value.textContent = number(reading.heart_rate, 1);
-    const gps = reading.latitude != null && reading.longitude != null
+  const stale = age > TELEMETRY_STALE_SECONDS;
+
+  value.textContent = number(reading.heart_rate, 1);
+
+  const gps =
+    reading.latitude != null && reading.longitude != null
       ? ` · GPS ${Number(reading.latitude).toFixed(4)}, ${Number(reading.longitude).toFixed(4)}`
       : "";
-    caption.textContent = `${reading.device_id} · ${ageText(age)}${stale ? " · no recent reading, device may be offline" : ""}${gps}`;
-    card.classList.toggle("is-stale", stale);
+
+  caption.textContent =
+    `${reading.device_id} · ${ageText(age)}` +
+    `${stale ? " · no recent reading, device may be offline" : ""}` +
+    gps;
+
+  card.classList.toggle("is-stale", stale);
+}
+
+  
+function handleRealtime(event) {
+  if (!event || typeof event !== "object") return;
+
+  if (event.type === "hardware_telemetry" && event.data) {
+    // Display-only: never invoke the risk engine from raw telemetry.
+    setTelemetry(event.data);
+    renderTelemetry();
+    return;
   }
 
-  function handleRealtime(event) {
-    if (!event || !event.type) return;
-    if (event.type === "hardware_telemetry" && event.data) {
-      // Display-only: update just the telemetry card, never the engine views.
-      setTelemetry(event.data);
-      renderTelemetry();
-      return;
-    }
-    if (event.type === "engine_output" && event.data) {
-      state.current = { ...(state.current || {}), engine_event: event.data };
-      state.history = [event.data, ...state.history.filter((item) => item.id !== event.data.id)].slice(0, 100);
-      refreshSecondaryData();
-    } else if (event.type === "location" && event.data) {
-      state.location = event.data;
-      renderLocation();
-      refreshSecondaryData();
-    
-} else if (event.type === "guardian_action" && event.data) {
-  const action = event.data;
+  if (event.type === "engine_output" && event.data) {
+    state.current = { ...(state.current || {}), engine_event: event.data };
+    state.history = [
+      event.data,
+      ...state.history.filter((item) => item.id !== event.data.id)
+    ].slice(0, 100);
+    refreshSecondaryData();
 
-  state.actions = [
-    action,
-    ...state.actions.filter((item) => item.id !== action.id)
-  ].slice(0, 100);
+  } else if (event.type === "location" && event.data) {
+    state.location = event.data;
+    renderLocation();
+    refreshSecondaryData();
 
-  const actionStatus = String(action.status || "").toUpperCase();
-  const metadata = action.metadata || {};
+  } else if (event.type === "guardian_action" && event.data) {
+    state.actions = [
+      event.data,
+      ...state.actions.filter((item) => item.id !== event.data.id)
+    ].slice(0, 100);
+    renderActions();
 
-  if (action.action_type === "GUARDIAN_NOTIFICATION") {
-    const recipients = Array.isArray(metadata.recipients)
-      ? metadata.recipients
-      : [];
+  } else if (event.type === "incident" && event.data) {
+    state.incidents = [
+      event.data,
+      ...state.incidents.filter((item) => item.id !== event.data.id)
+    ].slice(0, 100);
+    renderIncidents();
 
-    const successfulRecipients = recipients.filter(
-      (recipient) => recipient.success
-    );
-
-    const recipientNames = successfulRecipients
-      .map((recipient) => recipient.guardian_name)
-      .filter(Boolean);
-
-    const recipientText = recipientNames.length
-      ? ` to ${recipientNames.join(", ")}`
-      : "";
-
-    if (actionStatus === "DELIVERED") {
-      notify(`✓ SMS delivered successfully${recipientText}.`);
-    } else if (actionStatus === "PENDING") {
-      notify(`SMS accepted by TextBee${recipientText}. Delivery is not confirmed yet.`);
-    } else if (actionStatus === "SENT") {
-      notify(`SMS sent to the provider${recipientText}. Delivery is not confirmed yet.`);
-    } else if (actionStatus === "MOCK_SENT") {
-      notify("Demo notification simulated. No real SMS was sent.");
-    } else if (actionStatus === "FAILED") {
-      notify("Guardian SMS failed. Please check the provider configuration.");
-    } else if (actionStatus === "UNAVAILABLE") {
-      notify("Guardian notification unavailable. Check guardian contacts and SMS configuration.");
-    }
+  } else if (event.type === "demo_status" && event.data) {
+    state.demo = event.data;
+    renderDemo();
   }
 
-  renderActions();
-} else if (event.type === "incident" && event.data) {
-
-    } else if (event.type === "incident" && event.data) {
-      state.incidents = [event.data, ...state.incidents.filter((item) => item.id !== event.data.id)].slice(0, 100);
-      renderIncidents();
-    } else if (event.type === "demo_status" && event.data) {
-      state.demo = event.data;
-      renderDemo();
-    }
-    renderCurrent();
-    renderCharts();
-    renderTables();
-  }
+  renderCurrent();
+  renderCharts();
+  renderTables();
+}
 
   async function refreshSecondaryData() {
     try {
@@ -385,7 +413,6 @@ async function loadNotificationStatus() {
   }
 
   function renderAll() {
-    renderTelemetry();
     renderCurrent();
     renderActions();
     renderLocation();
@@ -451,21 +478,12 @@ async function loadNotificationStatus() {
     const stop = $("#demo-stop");
     if (!start || !stop) return;
     start.disabled = active;
-    // Keep Live Hardware clickable so users can always leave demo mode.
-    stop.disabled = false;
-    start.classList.toggle("mode-selected", active);
-    stop.classList.toggle("mode-selected", !active);
-    start.setAttribute("aria-pressed", String(active));
-    stop.setAttribute("aria-pressed", String(!active));
-    $("#demo-status").textContent = active
-      ? `${demo.source || "SYNTHETIC DEMO"} · ${demo.scenario || "ACTIVE"} · ${demo.sample_count || 0} samples`
-      : (demo.error ? `Error: ${demo.error}` : "Live hardware mode selected · waiting for actual sensor data");
+    stop.disabled = !active;
+    $("#demo-status").textContent = active ? `${demo.source || "DEMO"} · ${demo.scenario || "ACTIVE"} · ${demo.sample_count || 0} samples` : (demo.error ? `Error: ${demo.error}` : "Stopped");
     $("#demo-status").classList.toggle("is-active", active);
     $("#demo-status").classList.toggle("is-error", Boolean(demo.error));
     const sessionId = demo.session?.id || state.current?.session?.id || "—";
-    const realSmsRequested = Boolean(demo.session?.metadata?.real_sms_requested);
-    const smsMode = realSmsRequested ? "REAL SMS REQUESTED (simulated alert text)" : "MOCK (no real SMS)";
-    $("#demo-source").textContent = `Data source: ${demo.source || "—"} · Monitoring status: ${active ? "ACTIVE" : "STOPPED"} · Session: ${sessionId} · Guardian SMS: ${smsMode}`;
+    $("#demo-source").textContent = `Data source: ${demo.source || "—"} · Monitoring status: ${active ? "ACTIVE" : "STOPPED"} · Session: ${sessionId}`;
     const description = demo.input_description || "Choose a scenario. The demo produces physiological samples only; the existing CARES engine decides every output.";
     $("#demo-description").textContent = description;
     $("#monitoring-status-dot")?.classList.toggle("status-dot-muted", !active);
@@ -497,134 +515,32 @@ async function loadNotificationStatus() {
 
   function renderLocation() {
     const location = state.location;
-    const username = state.user?.name || "there";
-    const isDemo = Boolean(state.demo?.active) ||
-      String(currentEvent()?.source || "").startsWith("DEMO_");
-
     $("#settings-gps").textContent = location ? "Connected" : "Not connected";
-
-    // Keep the user's name visible even while the hardware GPS is unavailable.
     if (!location) {
-      const message = isDemo
-        ? "Hardware location unavailable in demonstration mode"
-        : "Waiting for actual GPS coordinates from your CARES hardware.";
-
-      $("#dashboard-location").innerHTML = `
-        <div class="location-card">
-          <h3>Current Location</h3>
-          <p>Hello, ${escapeHTML(username)}! Your location will appear here.</p>
-          <p class="location-status-text">${escapeHTML(message)}</p>
-        </div>
-      `;
-
-      $("#location-details").innerHTML = `
-        <div class="location-card">
-          <h3>Hello, ${escapeHTML(username)}!</h3>
-          <p>Your location is not available yet.</p>
-          <p class="location-status-text">${escapeHTML(message)}</p>
-          <p>CARES will display the location only after receiving valid coordinates from the connected GPS hardware.</p>
-        </div>
-      `;
-
-      $("#map-container").innerHTML = `
-        <div class="map-empty">
-          <span>⌖</span>
-          <p>Waiting for actual hardware GPS coordinates.</p>
-        </div>
-      `;
-
-      const disclaimer = $("#map-container").nextElementSibling;
-      if (disclaimer) {
-        disclaimer.textContent =
-          "The map will use real GPS coordinates received from CARES hardware. No location is estimated or generated.";
-      }
-
-      $("#location-notice").innerHTML = `
-        <span class="notice-icon">⌖</span>
-        <div>
-          <strong>${escapeHTML(message)}</strong>
-          <p>Hello, ${escapeHTML(username)}. Only actual hardware coordinates will be shown here.</p>
-        </div>
-      `;
+      const unavailable = state.demo?.active || String(currentEvent()?.source || "").startsWith("DEMO_") ? "Hardware location unavailable in demonstration mode." : "Hardware location unavailable.";
+      $("#dashboard-location").innerHTML = `<div class="empty-inline">${escapeHTML(unavailable)}</div>`;
+      $("#location-details").innerHTML = '<div class="empty-inline">No hardware location event has been received.</div>';
+      $("#map-container").innerHTML = '<div class="map-empty"><span>⌖</span><p>Map unavailable until hardware coordinates arrive.</p></div>';
+      if ($("#map-container").nextElementSibling) $("#map-container").nextElementSibling.textContent = "Map links use the actual coordinates supplied by hardware. No location is generated by CARES.";
+      $("#location-notice").innerHTML = `<span class="notice-icon">⌖</span><div><strong>${escapeHTML(unavailable)}</strong><p>Only actual hardware coordinates will be displayed here.</p></div>`;
       return;
     }
-
+    const address = location.formatted_address || "Address unavailable — coordinates shown";
+    const coordinateText = `${number(location.latitude, 6)}, ${number(location.longitude, 6)}`;
+    const meta = `${location.accuracy === null ? "Accuracy unavailable" : `± ${number(location.accuracy, 1)} m`} · ${escapeHTML(location.source)} · ${escapeHTML(timestamp(location.timestamp))}`;
+    $("#dashboard-location").innerHTML = `<p class="location-address">${escapeHTML(address)}</p><p class="location-coordinates">${escapeHTML(coordinateText)}</p><p class="location-meta">${meta}</p>`;
+    $("#location-details").innerHTML = `<div class="location-detail-value"><span>Human-readable address</span><strong>${escapeHTML(address)}</strong></div><div class="location-detail-value"><span>Coordinates</span><strong>${escapeHTML(coordinateText)}</strong></div><div class="location-detail-value"><span>Accuracy</span><strong>${location.accuracy === null ? "Unavailable" : `± ${number(location.accuracy, 1)} metres`}</strong></div><div class="location-detail-value"><span>Source</span><strong>${escapeHTML(location.source)}</strong></div><div class="location-detail-value"><span>Last updated</span><strong>${escapeHTML(timestamp(location.timestamp))}</strong></div>`;
+    $("#location-notice").innerHTML = `<span class="notice-icon">✓</span><div><strong>Hardware GPS location received</strong><p>Source: ${escapeHTML(location.source)}. Coordinates are authoritative; address resolution is optional.</p></div>`;
     const lat = Number(location.latitude);
     const lon = Number(location.longitude);
-
-    if (!Number.isFinite(lat) || !Number.isFinite(lon) ||
-        lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      $("#dashboard-location").innerHTML = `
-        <div class="location-card">
-          <h3>Current Location</h3>
-          <p>Hello, ${escapeHTML(username)}! GPS data was received, but the coordinates are invalid.</p>
-        </div>
-      `;
-      $("#location-details").innerHTML =
-        '<div class="empty-inline">Invalid GPS coordinates received from hardware.</div>';
-      $("#map-container").innerHTML = `
-        <div class="map-empty"><span>⌖</span><p>Invalid GPS coordinates.</p></div>
-      `;
-      return;
-    }
-
-    const address = location.formatted_address || location.address ||
-      `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
-
-    $("#dashboard-location").innerHTML = `
-      <div class="location-card">
-        <h3>Current Location</h3>
-        <p>Hello, ${escapeHTML(username)}! Your location is available.</p>
-        <p>${escapeHTML(address)}</p>
-        <p class="location-status-text">GPS coordinates received from hardware.</p>
-      </div>
-    `;
-
-    const details = [
-      ["Address", address],
-      ["Latitude", lat.toFixed(6)],
-      ["Longitude", lon.toFixed(6)],
-      ["Source", location.source || location.device_id || "Hardware GPS"],
-      ["Accuracy", location.accuracy_m == null ? "Not provided by hardware" : `${number(location.accuracy_m, 1)} m`],
-      ["Updated", timestamp(location.timestamp || location.created_at)],
-    ];
-    $("#location-details").innerHTML = `
-      <div class="location-card">
-        <h3>Hello, ${escapeHTML(username)}! Your location is here.</h3>
-        <p class="location-status-text">These details come from the actual hardware GPS event.</p>
-        <dl class="location-data-list">
-          ${details.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("")}
-        </dl>
-      </div>
-    `;
-
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const delta = 0.01;
     const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
-    const mapSrc =
-      `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lon}`)}`;
-    const mapLink =
-      `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`;
-
-    $("#map-container").innerHTML = `
-      <iframe title="Map of current hardware location" loading="lazy" src="${mapSrc}"></iframe>
-    `;
-
+    const mapSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lon}`)}`;
+    const mapLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`;
+    $("#map-container").innerHTML = `<iframe title="Map of current hardware location" loading="lazy" src="${mapSrc}"></iframe>`;
     const disclaimer = $("#map-container").nextElementSibling;
-    if (disclaimer) {
-      disclaimer.innerHTML = `
-        <a href="${mapLink}" target="_blank" rel="noopener noreferrer">
-          Open actual hardware coordinates in Google Maps ↗
-        </a>
-      `;
-    }
-
-    $("#location-notice").innerHTML = `
-      <span class="notice-icon">⌖</span>
-      <div>
-        <strong>Hello, ${escapeHTML(username)}! Your GPS location is available.</strong>
-        <p>Map and address are based on coordinates received from the hardware.</p>
-      </div>
-    `;
+    if (disclaimer) disclaimer.innerHTML = `<a href="${mapLink}" target="_blank" rel="noreferrer">Open these coordinates in Google Maps ↗</a>`;
   }
 
   function renderBaseline() {
@@ -708,15 +624,99 @@ async function loadNotificationStatus() {
 
   function renderIncidents() {
     const incidents = state.incidents || [];
+
     if (!incidents.length) {
-      $("#incidents-list").innerHTML = '<div class="empty-state"><div class="empty-icon">✓</div><h2>No incidents recorded</h2><p>When the backend records an actual high-risk engine event, its explanation and available location will appear here.</p></div>';
+      $("#incidents-list").innerHTML =
+        '<div class="empty-state"><div class="empty-icon">✓</div><h2>No incidents recorded</h2><p>When the backend records an actual high-risk engine event, its explanation and available location will appear here.</p></div>';
       return;
     }
+
     $("#incidents-list").innerHTML = incidents.map((incident) => {
       const event = incident.engine_event || {};
       const location = incident.location || null;
-      const actionText = (incident.actions || []).map((action) => `${action.action_type} · ${actionStatusLabel(action.status)}`).join("; ") || "No actions recorded";
-      return `<article class="incident-card"><div class="incident-card-head"><div><p class="eyebrow eyebrow-light">Recorded CARES incident · ${escapeHTML(incident.source || event.source || "—")}</p><h2>${escapeHTML(incident.risk_level || "HIGH")} · Engine event #${escapeHTML(incident.engine_event_id)}</h2></div><span class="incident-time">${escapeHTML(timestamp(incident.timestamp))}</span></div><p class="incident-explanation">${escapeHTML(incident.explanation || event.explanation || "No explanation returned.")}</p><div class="incident-meta"><div><span>HR</span><strong>${number(event.current_value, 1)} BPM</strong></div><div><span>Personal baseline</span><strong>${number(event.baseline, 1)} BPM</strong></div><div><span>Deviation</span><strong>${signedNumber(event.deviation, 1)} BPM</strong></div><div><span>Location</span><strong>${location ? escapeHTML(location.formatted_address || `${location.latitude}, ${location.longitude}`) : "Hardware location unavailable"}</strong></div><div><span>Actions</span><strong>${escapeHTML(actionText)}</strong></div><div><span>Status</span><strong>${escapeHTML(incident.status || "OPEN")}</strong></div></div></article>`;
+      const source = incident.source || event.source || "—";
+      const isDemo = String(source).startsWith("DEMO_");
+
+      // occurred_at is the physiological event time, not the database
+      // creation time or the later guardian-notification dispatch time.
+      // Demo timestamps are elapsed sample seconds, not Unix timestamps.
+// Use the actual event creation time for demo records.
+      
+
+      const recordedAt = isDemo
+        ? event.created_at
+        : incident.occurred_at ??
+          event.occurred_at ??
+          incident.timestamp ??
+          event.timestamp;
+
+      const recordedDateTime = formatIncidentIST(recordedAt);
+
+      // Keep elapsed-time labels only for demo/simulation incidents.
+      const elapsedTime = isDemo
+        ? timestamp(incident.elapsed_seconds)
+        : "";
+
+      const actionText = (incident.actions || [])
+        .map((action) => `${action.action_type} · ${actionStatusLabel(action.status)}`)
+        .join("; ") || "No actions recorded";
+
+      return `
+        <article class="incident-card">
+          <div class="incident-card-head">
+            <div>
+              <p class="eyebrow eyebrow-light">
+                Recorded CARES incident · ${escapeHTML(source)}
+              </p>
+              <h2>
+                ${escapeHTML(incident.risk_level || "HIGH")}
+                · Engine event #${escapeHTML(incident.engine_event_id)}
+              </h2>
+              <p class="incident-recorded-time">
+                <strong>${isDemo ? "Recorded (demo):" : "Occurred:"}</strong> ${recordedDateTime}
+              </p>
+            </div>
+            ${isDemo && elapsedTime
+              ? `<span class="incident-time">${escapeHTML(elapsedTime)}</span>`
+              : ""}
+          </div>
+
+          <p class="incident-explanation">
+            ${escapeHTML(incident.explanation || event.explanation || "No explanation returned.")}
+          </p>
+
+          <div class="incident-meta">
+            <div>
+              <span>HR</span>
+              <strong>${number(event.current_value, 1)} BPM</strong>
+            </div>
+            <div>
+              <span>Personal baseline</span>
+              <strong>${number(event.baseline, 1)} BPM</strong>
+            </div>
+            <div>
+              <span>Deviation</span>
+              <strong>${signedNumber(event.deviation, 1)} BPM</strong>
+            </div>
+            <div>
+              <span>Location</span>
+              <strong>
+                ${location
+                  ? escapeHTML(location.formatted_address || `${location.latitude}, ${location.longitude}`)
+                  : "Hardware location unavailable"}
+              </strong>
+            </div>
+            <div>
+              <span>Actions</span>
+              <strong>${escapeHTML(actionText)}</strong>
+            </div>
+            <div>
+              <span>Status</span>
+              <strong>${escapeHTML(incident.status || "OPEN")}</strong>
+            </div>
+          </div>
+        </article>
+      `;
     }).join("");
   }
 
@@ -819,14 +819,9 @@ async function loadNotificationStatus() {
   async function startDemo() {
     const button = $("#demo-start");
     button.disabled = true;
-    const sendRealSms = Boolean($("#demo-real-sms")?.checked);
-    if (sendRealSms && !window.confirm("This demo will send a REAL SMS to your registered guardian(s) when the simulated HIGH-risk alert fires. The message will be labelled as a simulated demonstration. Continue?")) {
-      button.disabled = false;
-      return;
-    }
     setMessage("#demo-status", "Starting…");
     try {
-      const payload = await request("/api/demo/start", { method: "POST", body: { scenario: $("#demo-scenario").value, send_real_sms: sendRealSms } });
+      const payload = await request("/api/demo/start", { method: "POST", body: { scenario: $("#demo-scenario").value } });
       state.demo = payload.demo;
       renderDemo();
       notify(`Demo started: ${payload.demo.source}. Every decision is produced by CARES.`);
@@ -838,28 +833,16 @@ async function loadNotificationStatus() {
   }
 
   async function stopDemo() {
-    const stopButton = $("#demo-stop");
-    stopButton.disabled = true;
-
-    // Live hardware is the default stream. Only call the stop endpoint when
-    // a synthetic/demo session is actually active.
-    if (!state.demo?.active) {
-      state.demo = { ...state.demo, active: false };
-      renderDemo();
-      try { await loadData(); } catch (_) {}
-      notify("Live hardware mode selected. CARES is waiting for real ESP32/GPS readings.");
-      return;
-    }
-
+    $("#demo-stop").disabled = true;
     try {
       const payload = await request("/api/demo/stop", { method: "POST" });
-      state.demo = payload.demo || { active: false };
+      state.demo = payload.demo;
       renderDemo();
       await loadData();
-      notify("Synthetic demo stopped. Live hardware mode selected; waiting for actual sensor readings.");
+      notify("Demo stopped. Its runtime engine state was discarded.");
     } catch (error) {
       renderDemo();
-      notify(`Could not switch to live mode: ${error.message}`);
+      notify(error.message);
     }
   }
 
@@ -895,8 +878,6 @@ async function loadNotificationStatus() {
 
   async function boot() {
     bindEvents();
-    // Keep the "N s ago" / stale indicator current between readings.
-    window.setInterval(renderTelemetry, 1000);
     try {
       const payload = await request("/api/auth/me");
       showApp(payload.user);
