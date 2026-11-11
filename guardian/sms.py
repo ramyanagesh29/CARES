@@ -1,35 +1,32 @@
 
-"""
-CARES guardian SMS service.
-
-Default provider: MOCK.
-Real SMS is attempted only when CARES_SMS_PROVIDER=textbee
-and the required TextBee credentials are configured.
-
-Demo notifications are explicitly labelled as simulated.
-
-A demo alert is MOCK unless ALL of the following are true:
-  * CARES_DEMO_REAL_SMS=true (defaults to false),
-  * CARES_SMS_PROVIDER=textbee with TEXTBEE_API_KEY configured,
-  * the person starting the demo explicitly asked for a real SMS.
-Even then the message is labelled as a simulated demonstration.
-"""
-
 from __future__ import annotations
 
 import json
 import math
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+IST = ZoneInfo("Asia/Kolkata")
+
 TEXTBEE_SEND_URL = "https://api.textbee.dev/api/v1/gateway/send-sms"
 HTTP_TIMEOUT_SECONDS = 15
+
+
+def _format_ist(timestamp):
+    """Convert a Unix timestamp to an explicit IST date/time string."""
+    if timestamp is None:
+        return "Unavailable"
+
+    return datetime.fromtimestamp(
+        float(timestamp), tz=timezone.utc
+    ).astimezone(IST).strftime("%d-%m-%Y %I:%M:%S %p IST")
 
 
 def _load_local_env() -> None:
@@ -171,18 +168,17 @@ def _build_message(
         except (TypeError, ValueError):
             location_url = None
 
-    if timestamp is None:
-        event_time = datetime.now().astimezone().strftime(
-            "%d-%m-%Y %I:%M:%S %p %Z"
-        )
-    else:
-        try:
-            event_time = datetime.fromtimestamp(
-                float(timestamp)
-            ).astimezone().strftime("%d-%m-%Y %I:%M:%S %p %Z")
+    # Incident timestamp: always display in Asia/Kolkata.
+    try:
+        if timestamp is None:
+            event_time = datetime.now(IST).strftime(
+                "%d-%m-%Y %I:%M:%S %p IST"
+            )
+        else:
+            event_time = _format_ist(timestamp)
 
-        except (TypeError, ValueError, OverflowError, OSError):
-            event_time = str(timestamp)
+    except (TypeError, ValueError, OverflowError, OSError):
+        event_time = str(timestamp)
 
     if is_demo:
         lines = [
@@ -214,17 +210,16 @@ def _build_message(
     if location_url:
         lines.append(f"Google Maps: {location_url}")
 
-        if location_fix_timestamp is not None:
-            try:
-                fix_time = datetime.fromtimestamp(
-                    float(location_fix_timestamp)
-                ).astimezone().strftime("%d-%m-%Y %I:%M:%S %p %Z")
-                lines.append(
-                    f"GPS fix time: {fix_time} "
-                    f"({_format_age(location_age_seconds)} before this alert)"
-                )
-            except (TypeError, ValueError, OverflowError, OSError):
-                pass
+    # GPS fix timestamp: always display in Asia/Kolkata.
+    if location_fix_timestamp is not None:
+        try:
+            fix_time = _format_ist(location_fix_timestamp)
+            lines.append(
+                f"GPS fix time: {fix_time} "
+                f"({_format_age(location_age_seconds)} before this alert)"
+            )
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
     else:
         reason = (
             f" ({location_unavailable_reason})"
@@ -368,17 +363,18 @@ def _send_textbee(
     }
 
 
-
 def get_textbee_batch_status(
     sms_batch_id: str,
     device_id: Optional[str] = None,
 ) -> dict:
     """Read TextBee batch delivery status without sending an SMS."""
+
     from urllib.parse import quote
 
     _load_local_env()
 
     api_key = os.getenv("TEXTBEE_API_KEY", "").strip()
+
     # Prefer the device that actually accepted the batch; fall back to config.
     device_id = (
         str(device_id or "").strip()
@@ -447,6 +443,7 @@ def get_textbee_batch_status(
         }
 
     data = parsed.get("data", parsed)
+
     if not isinstance(data, dict):
         return {
             "success": False,
