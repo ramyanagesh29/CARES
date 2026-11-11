@@ -1580,9 +1580,10 @@ h3 {
 
   border-radius: 10px;
 
-  transition: transform 0.18s ease, box-shadow 0.18s ease, *background* 0.18s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
 
 }
+
 
 
 
@@ -5436,4 +5437,14 @@ button {
 @media (max-width: 640px) {
   .mode-toggle { width: 100%; }
   .mode-button { flex: 1 1 140px; }
+}
+.incident-recorded-time {
+  margin-top: 10px;
+  font-size: 13px;
+  color: inherit;
+  opacity: 0.9;
+}
+
+.incident-recorded-time strong {
+  font-weight: 600;
 }
