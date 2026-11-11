@@ -337,11 +337,23 @@ class CARESBackend:
         if session["status"] != "ACTIVE":
             raise ValidationError("Monitoring session is not active.")
 
-        payload = output.to_dict()
+               payload = output.to_dict()
         created_at = utc_now()
 
         notification_action_id = None
         should_notify = False
+        is_demo_source = source.startswith("DEMO_")
+
+        # Resolve a fresh hardware GPS fix for demo incidents.
+        demo_location = None
+        if is_demo_source:
+            hardware_location = self._recent_hardware_location(user_id)
+            location_info = self._notification_location(
+                user_id,
+                hardware_location,
+                is_demo=False,
+            )
+            demo_location = location_info["location"]
 
         with self.database.transaction() as connection:
 
@@ -356,14 +368,12 @@ class CARESBackend:
             previous_risk = (
                 previous_event["risk_level"] if previous_event else None
             )
-            is_demo_source = source.startswith("DEMO_")
 
-            # Notify only when entering a new HIGH-risk episode.
-            # Demo notifications are allowed, but guardian.sms forces MOCK delivery.
             should_notify = (
                 payload["risk_level"] == RiskLevel.HIGH.value
                 and previous_risk != RiskLevel.HIGH.value
             )
+
             cursor = connection.execute(
                 "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "
                 "percentage_deviation, risk_level, risk_score, confidence, trend, persistence, "
@@ -400,11 +410,15 @@ class CARESBackend:
                 if action == "GUARDIAN_NOTIFICATION":
                     notification_action_id = int(action_cursor.lastrowid)
 
-            location = self._latest_location(
-                user_id,
-                connection=connection,
-                session_id=session_id,
-            )
+            # Associate GPS independently of notification actions.
+            if is_demo_source:
+                location = demo_location
+            else:
+                location = self._latest_location(
+                    user_id,
+                    connection=connection,
+                    session_id=session_id,
+                )
 
             incident_id = None
 
